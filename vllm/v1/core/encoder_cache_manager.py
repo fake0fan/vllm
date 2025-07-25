@@ -48,26 +48,44 @@ class EncoderCacheManager:
                This is cleared after every call to get_freed_ids().
     """
 
+    # ------------------------------------------------------------------ #
     def __init__(self, cache_size: int):
         self.cache_size = cache_size
         self.num_free_slots = cache_size
-        # req_id -> cached input ids
-        self.cached: dict[str, set[int]] = {}
-        # list of [req_id, input_id]
-        self.freed: list[tuple[str, int]] = []
+        self.num_free_able_slots = cache_size
+
+        self.cached: dict[str, set(str)] = {}
+
+        # List of mm_hash
+        self.freed_able: list[Tuple[str, int]] = []
+        self.freed: list[str] = []
 
     def has_cache(self, request: Request, input_id: int) -> bool:
         """Check if encoder output for a specific multimodal input is cached.
 
-        Args:
-            request: The request containing the multimodal input
-            input_id: Index of the multimodal input within the request
-
-        Returns:
-            True if the encoder output for this input is already cached
+        If the entry is in `freed_able` (i.e. cached with refcount==0),
+        move it back to the active set by removing it from `freed_able`
+        and decreasing `num_free_able_slots`.
         """
-        req_id = request.request_id
-        return req_id in self.cached and input_id in self.cached[req_id]
+        mm_hash = request.mm_hashes[input_id]
+        request_id = request.request_id
+        # Not cached at all
+        if mm_hash not in self.cached:
+            return False
+
+        # Cached but currently not referenced by any request
+        if not self.cached[mm_hash]:
+            # Locate the tuple (mm_hash, num_tokens) inside freed_able
+            for idx, (h, num_tokens) in enumerate(self.freed_able):
+                if h == mm_hash:
+                    # Remove from the "ready-to-free" list
+                    self.freed_able.pop(idx)
+                    # Those tokens are no longer considered free-able
+                    self.num_free_able_slots -= num_tokens
+                    break
+        self.cached[mm_hash].add(request_id)
+        return True
+
 
     def can_allocate(self, request: Request, input_id: int) -> bool:
         """Check if there's sufficient cache space for a multimodal input.
@@ -81,7 +99,17 @@ class EncoderCacheManager:
             for this multimodal input
         """
         num_tokens = request.get_num_encoder_tokens(input_id)
-        return num_tokens <= self.num_free_slots
+        if num_tokens <= self.num_free_slots:
+            return True
+        if num_tokens > self.num_free_able_slots:
+            return False
+        # Free some slot
+        while num_tokens > self.num_free_slots:
+            mm_hash, num_free_token = self.freed_able.pop(0)
+            del self.cached[mm_hash]
+            self.freed.append(mm_hash)
+            self.num_free_slots += num_free_token
+        return True
 
     def allocate(self, request: Request, input_id: int) -> None:
         """Allocate cache space for a multimodal input's encoder output.
@@ -99,12 +127,15 @@ class EncoderCacheManager:
             This method assumes can_allocate() returned True for the same
             request and input_id. It will reduce available cache space.
         """
-        req_id = request.request_id
-        if req_id not in self.cached:
-            self.cached[req_id] = set()
-        self.cached[req_id].add(input_id)
-        self.num_free_slots -= request.get_num_encoder_tokens(input_id)
+        mm_hash = request.mm_hashes[input_id]
+        request_id = request.request_id
+        if mm_hash not in self.cached:
+            self.cached[mm_hash] = set()
 
+        self.cached[mm_hash].add(request_id)
+        self.num_free_slots -= request.get_num_encoder_tokens(input_id)
+        self.num_free_able_slots -= request.get_num_encoder_tokens(input_id)
+        
     def get_cached_input_ids(self, request: Request) -> set[int]:
         """Get all cached multimodal input IDs for a request.
 
@@ -115,7 +146,11 @@ class EncoderCacheManager:
             Set of input_ids that have cached encoder outputs for this request.
             Returns empty set if no inputs are cached for this request.
         """
-        return self.cached.get(request.request_id, set())
+        return {
+            input_id
+            for input_id in range(len(request.mm_hashes))
+            if request.mm_hashes[input_id] in self.cached
+        }
 
     def free_encoder_input(self, request: Request, input_id: int) -> None:
         """Free cache space for a single multimodal input's encoder output.
@@ -131,14 +166,17 @@ class EncoderCacheManager:
             input_id: Index of the multimodal input to free from cache
         """
         req_id = request.request_id
-        if req_id not in self.cached:
+        mm_hash = request.mm_hashes[input_id]
+        if mm_hash not in self.cached:
             return
-
-        self.cached[req_id].discard(input_id)
-        if len(self.cached[req_id]) == 0:
-            del self.cached[req_id]
-        self.num_free_slots += request.get_num_encoder_tokens(input_id)
-        self.freed.append((req_id, input_id))
+        if not self.cached[mm_hash]:
+            return
+        self.cached[mm_hash].discard(req_id)
+        if not self.cached[mm_hash]:
+            self.freed_able.append(
+                (mm_hash, request.get_num_encoder_tokens(input_id))
+            )
+            self.num_free_able_slots += request.get_num_encoder_tokens(input_id)
 
     def free(self, request: Request) -> None:
         """Free all cached encoder outputs for a request.
@@ -153,7 +191,7 @@ class EncoderCacheManager:
         for input_id in input_ids:
             self.free_encoder_input(request, input_id)
 
-    def get_freed_ids(self) -> list[tuple[str, int]]:
+    def get_freed_mm_hashes(self) -> list[tuple[str, int]]:
         """Get and clear the list of recently freed encoder cache entries.
 
         This method returns all encoder cache entries that were freed since

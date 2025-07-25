@@ -145,7 +145,7 @@ class SchedulerOutput:
     finished_req_ids: set[str]
     # list of (req_id, encoder_input_index) tuples.
     # Used to free the encoder cache.
-    free_encoder_input_ids: list[tuple[str, int]]
+    free_encoder_mm_hashes: list[tuple[str, int]]
 
     # Dict of request ids to their index within the batch
     # for filling the next token bitmask
