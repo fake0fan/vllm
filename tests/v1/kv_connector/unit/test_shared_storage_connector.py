@@ -131,6 +131,7 @@ def test_shared_storage_connector_hashes(tmp_path):
         max_model_len=8192,
         max_num_seqs=1,
         kv_transfer_config=kv_transfer_config,
+        limit_mm_per_prompt={"image": 2},
     )
 
     # don't put this import at the top level
