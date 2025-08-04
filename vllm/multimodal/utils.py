@@ -42,6 +42,7 @@ class MediaConnector:
         connection: HTTPConnection = global_http_connection,
         *,
         allowed_local_media_path: str = "",
+        cache: Optional[Any] = None,
     ) -> None:
         """
         Args:
@@ -52,12 +53,14 @@ class MediaConnector:
             connection: HTTP connection client to download media contents.
             allowed_local_media_path: A local directory to load media files
                                       from.
+            cache: Optional processing cache for UUID-based lookups.
         """
         super().__init__()
 
         self.media_io_kwargs: dict[str, dict[
             str, Any]] = media_io_kwargs if media_io_kwargs else {}
         self.connection = connection
+        self.cache = cache
 
         if allowed_local_media_path:
             allowed_local_media_path_ = Path(allowed_local_media_path)

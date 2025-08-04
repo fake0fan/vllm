@@ -3,7 +3,7 @@
 
 import pickle
 from collections.abc import Iterable, Mapping
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -22,6 +22,55 @@ A dictionary containing hashes for items in each modality.
 
 
 class MultiModalHasher:
+
+    @classmethod
+    def hash_media_with_uuid(
+        cls,
+        uuid: Optional[str],
+        media_url: Optional[str] = None,
+        media_content: Optional[object] = None,
+        **kwargs: object,
+    ) -> str:
+        """
+        Generate a hash for media content, prioritizing UUID if provided.
+        
+        Args:
+            uuid: Optional UUID provided by the user
+            media_url: Optional media URL 
+            media_content: Optional media content (used when UUID/URL not available)
+            **kwargs: Additional parameters to include in hash
+            
+        Returns:
+            A unique hash string for the media
+        """
+        hasher = blake3()
+        
+        if uuid:
+            # If UUID is provided, use it as the primary key
+            hasher.update(b"uuid:")
+            hasher.update(uuid.encode("utf-8"))
+            # Include kwargs but not the media content itself
+            for k, v in kwargs.items():
+                hasher.update(k.encode("utf-8"))
+                hasher.update(cls.serialize_item(v))
+        elif media_url:
+            # For URLs without UUID, hash only the URL not the content
+            hasher.update(b"url:")
+            hasher.update(media_url.encode("utf-8"))
+            # Include kwargs
+            for k, v in kwargs.items():
+                hasher.update(k.encode("utf-8"))
+                hasher.update(cls.serialize_item(v))
+        else:
+            # Fallback to full content hashing
+            hasher.update(b"content:")
+            if media_content:
+                hasher.update(cls.serialize_item(media_content))
+            for k, v in kwargs.items():
+                hasher.update(k.encode("utf-8"))
+                hasher.update(cls.serialize_item(v))
+                
+        return hasher.hexdigest()
 
     @classmethod
     def serialize_item(cls, obj: object) -> Union[bytes, memoryview]:
