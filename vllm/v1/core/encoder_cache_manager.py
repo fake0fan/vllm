@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from vllm.logger import init_logger
 from vllm.multimodal import MultiModalRegistry
 from vllm.v1.request import Request
+from collections import OrderedDict
 
 if TYPE_CHECKING:
     from vllm.config import ModelConfig, SchedulerConfig
@@ -64,7 +65,7 @@ class EncoderCacheManager:
         self.cached: dict[str, set[str]] = {}
 
         # List of mm_hash
-        self.freed_able: list[tuple[str, int]] = []
+        self.freed_able: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
 
     def has_cache(self, request: Request, input_id: int) -> bool:
@@ -85,14 +86,8 @@ class EncoderCacheManager:
 
         # Cached but currently not referenced by any request
         if not self.cached[mm_hash]:
-            # Locate the tuple (mm_hash, num_tokens) inside freed_able
-            for idx, (h, num_tokens) in enumerate(self.freed_able):
-                if h == mm_hash:
-                    # Remove from the "ready-to-free" list
-                    self.freed_able.pop(idx)
-                    # Those tokens are no longer considered free-able
-                    self.num_free_able_slots -= num_tokens
-                    break
+            num_tokens = self.freed_able.pop(mm_hash)
+            self.num_free_able_slots -= num_tokens
         self.cached[mm_hash].add(request_id)
         return True
 
@@ -122,7 +117,7 @@ class EncoderCacheManager:
             return False
         # Free some slot
         while num_tokens > self.num_free_slots:
-            mm_hash, num_free_token = self.freed_able.pop(0)
+            mm_hash, num_free_token = self.freed_able.popitem(last=False)
             del self.cached[mm_hash]
             self.freed.append(mm_hash)
             self.num_free_slots += num_free_token
@@ -180,10 +175,9 @@ class EncoderCacheManager:
             return
         self.cached[mm_hash].discard(req_id)
         if not self.cached[mm_hash]:
-            self.freed_able.append(
-                (mm_hash, request.get_num_encoder_tokens(input_id)))
-            self.num_free_able_slots += request.get_num_encoder_tokens(
-                input_id)
+            num_tokens = request.get_num_encoder_tokens(input_id)
+            self.freed_able[mm_hash] = num_tokens
+            self.num_free_able_slots += num_tokens
 
     def free(self, request: Request) -> None:
         """Free all cached encoder outputs for a request.
