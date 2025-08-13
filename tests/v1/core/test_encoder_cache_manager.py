@@ -6,12 +6,11 @@ Because EncoderCacheManager depends only on a very small subset of a
 the required attributes / methods.
 """
 
-import pytest
+import pytest  # noqa: F401  (import kept for clarity when running with pytest)
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 
 
 # ------------------ Mock Classes ------------------ #
-
 class MockRequest:
     def __init__(self, request_id, mm_hashes, token_counts):
         self.request_id = request_id
@@ -23,26 +22,25 @@ class MockRequest:
 
 
 # ------------------ Unit Tests ------------------ #
-
 def test_basic_allocate_and_reuse():
     cache = EncoderCacheManager(cache_size=10)
     req = MockRequest("r1", ["imgA"], [4])
 
-    assert cache.has_cache(req, 0) is False
-    assert cache.can_allocate(req, 0) is True
+    assert not cache.has_cache(req, 0)
+    assert cache.can_allocate(req, 0)
 
     cache.allocate(req, 0)
 
-    assert cache.has_cache(req, 0) is True
+    assert cache.has_cache(req, 0)
     assert "r1" in cache.cached["imgA"]
     assert cache.num_free_slots == 6
 
-    # Free twice to bring refcount to 0
+    # Free twice to bring refcount to 0.
     cache.free_encoder_input(req, 0)
     cache.free_encoder_input(req, 0)
 
     assert not cache.cached["imgA"]
-    assert ("imgA", 4) in cache.freed_able
+    assert "imgA" in cache.freed_able
     assert cache.num_free_able_slots == 10
     assert cache.num_free_slots == 6
 
@@ -59,7 +57,7 @@ def test_freeing_decreases_refcount_and_moves_to_freed_able():
     manager.free_encoder_input(req, 0)
 
     assert not manager.cached["img3"]
-    assert ("img3", 5) in manager.freed_able
+    assert "img3" in manager.freed_able
     assert manager.num_free_able_slots == 10
 
 
@@ -80,8 +78,8 @@ def test_free_request_frees_all_inputs():
 
     assert not manager.cached["a"]
     assert not manager.cached["b"]
-    assert ("a", 2) in manager.freed_able
-    assert ("b", 3) in manager.freed_able
+    assert "a" in manager.freed_able
+    assert "b" in manager.freed_able
     assert manager.num_free_able_slots == 10
 
 
@@ -95,10 +93,10 @@ def test_eviction_when_cache_is_full():
     manager.allocate(req1, 0)
     manager.free_encoder_input(req1, 0)
 
-    assert manager.can_allocate(req2, 0) is True
+    assert manager.can_allocate(req2, 0)
     manager.allocate(req2, 0)
 
-    # 'x' should have been evicted
+    # 'x' should have been evicted.
     assert "x" not in manager.cached
     assert "x" in manager.get_freed_mm_hashes()
 
@@ -126,10 +124,10 @@ def test_has_cache_restores_from_freed_able():
 
     manager.free_encoder_input(req, 0)
 
-    # Should restore from freed_able
-    assert manager.has_cache(req, 0) is True
+    # Should restore from freed_able.
+    assert manager.has_cache(req, 0)
     assert len(manager.cached["imgZ"]) == 1
-    assert ("imgZ", 4) not in manager.freed_able
+    assert "imgZ" not in manager.freed_able
     assert manager.num_free_able_slots == 6
 
 
@@ -142,7 +140,7 @@ def test_get_freed_mm_hashes_clears_freed_list():
     manager.allocate(req1, 0)
     manager.free_encoder_input(req1, 0)
 
-    # Should trigger eviction of 'a'
+    # Should trigger eviction of 'a'.
     assert manager.can_allocate(req2, 0)
     manager.allocate(req2, 0)
 
