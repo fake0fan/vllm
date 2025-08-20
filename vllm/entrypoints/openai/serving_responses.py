@@ -16,8 +16,7 @@ from fastapi import Request
 from openai import BaseModel
 # yapf conflicts with isort for this block
 # yapf: disable
-from openai.types.responses import (ResponseContentPartDoneEvent,
-                                    ResponseCreatedEvent,
+from openai.types.responses import (ResponseCreatedEvent,
                                     ResponseFunctionToolCall,
                                     ResponseInProgressEvent,
                                     ResponseOutputItem,
@@ -54,7 +53,7 @@ from vllm.entrypoints.openai.protocol import (ErrorResponse,
 # yapf: enable
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.entrypoints.openai.serving_models import OpenAIServingModels
-from vllm.entrypoints.tool_server import ToolServer
+from vllm.entrypoints.tool_server import MCPToolServer, ToolServer
 from vllm.inputs.data import TokensPrompt as EngineTokensPrompt
 from vllm.logger import init_logger
 from vllm.outputs import CompletionOutput
@@ -238,6 +237,15 @@ class OpenAIServingResponses(OpenAIServing):
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
+        if self.tool_server is not None and isinstance(
+                self.tool_server, MCPToolServer
+        ) and (request.background or request.stream) and request.tools and any(
+                tool.type in ["web_search_preview", "code_interpreter"]
+                for tool in request.tools):
+            return self.create_error_response(
+                "MCP tool server is not supported in background mode and "
+                "streaming mode")
+
         # Schedule the request and get the result generator.
         generators: list[AsyncGenerator[ConversationContext, None]] = []
 
@@ -400,6 +408,11 @@ class OpenAIServingResponses(OpenAIServing):
             request, prev_response)
         prompt_token_ids = render_for_completion(messages)
         engine_prompt = EngineTokensPrompt(prompt_token_ids=prompt_token_ids)
+
+        # Add cache_salt if provided in the request
+        if request.cache_salt is not None:
+            engine_prompt["cache_salt"] = request.cache_salt
+
         return messages, [prompt_token_ids], [engine_prompt]
 
     async def responses_full_generator(
@@ -844,9 +857,13 @@ class OpenAIServingResponses(OpenAIServing):
                             type="reasoning",
                             content=[
                                 ResponseReasoningTextContent(
-                                    text=previous_item.content[0].text),
+                                    text=previous_item.content[0].text,
+                                    type="reasoning_text",
+                                ),
                             ],
                             status="completed",
+                            id=current_item_id,
+                            summary=[],
                         )
                         yield _send_event(
                             ResponseReasoningTextDoneEvent(
@@ -856,15 +873,6 @@ class OpenAIServingResponses(OpenAIServing):
                                 output_index=current_output_index,
                                 content_index=current_content_index,
                                 text=previous_item.content[0].text,
-                            ))
-                        yield _send_event(
-                            ResponseContentPartDoneEvent(
-                                type="response.content_part.done",
-                                item_id=current_item_id,
-                                sequence_number=-1,
-                                output_index=current_output_index,
-                                content_index=current_content_index,
-                                part=reasoning_item,
                             ))
                         yield _send_event(
                             ResponseOutputItemDoneEvent(

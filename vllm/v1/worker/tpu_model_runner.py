@@ -32,9 +32,9 @@ from vllm.model_executor.models.interfaces import supports_transcription
 from vllm.model_executor.models.interfaces_base import (
     is_pooling_model, is_text_generation_model)
 from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.inputs import (BatchedTensorInputs, MultiModalKwargs,
+from vllm.multimodal.inputs import (BatchedTensorInputs, MultiModalKwargsItem,
                                     PlaceholderRange)
-from vllm.multimodal.utils import group_mm_inputs_by_modality
+from vllm.multimodal.utils import group_mm_kwargs_by_modality
 from vllm.sequence import IntermediateTensors
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.utils import (LayerBlockType, cdiv, is_pin_memory_available,
@@ -359,7 +359,7 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Free the cached encoder outputs.
         for mm_hash in scheduler_output.free_encoder_mm_hashes:
-            self.encoder_cache.pop(mm_hash, None)
+            self.encoder_cache.pip(mm_hash, None)
 
         # Remove the unscheduled requests from the persistent batch.
         # NOTE(woosuk): The unscheduled requests are either preempted requests
@@ -389,7 +389,7 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.requests[req_id] = CachedRequestState(
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
-                mm_inputs=new_req_data.mm_inputs,
+                mm_kwargs=new_req_data.mm_kwargs,
                 mm_positions=new_req_data.mm_positions,
                 mm_hashes=new_req_data.mm_hashes,
                 sampling_params=sampling_params,
@@ -838,26 +838,16 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             return
 
         # Batch the multi-modal inputs.
-        mm_inputs = list[MultiModalKwargs]()
-        mm_hashes = list[str]()
-        pos_infos = list[PlaceholderRange]()
-
+        mm_kwargs = list[MultiModalKwargsItem]()
+        # List of tuple (mm_hash, pos_info)
+        mm_hashes_pos = list[tuple[str, PlaceholderRange]]()
         for req_id, encoder_input_ids in scheduled_encoder_inputs.items():
             req_state = self.requests[req_id]
 
             for mm_input_id in encoder_input_ids:
                 mm_hash = req_state.mm_hashes[mm_input_id]
-
-                # Skip if already cached
-                if mm_hash in self.encoder_cache:
-                    continue
-
-                mm_inputs.append(req_state.mm_inputs[mm_input_id])
-                mm_hashes.append(mm_hash)
-                pos_infos.append(req_state.mm_positions[mm_input_id])
-
-        if not mm_inputs:
-            return  # All inputs already cached
+                mm_kwargs.append(req_state.mm_kwargs[mm_input_id])
+                mm_hashes_pos.append((mm_hash, req_state.mm_positions[mm_input_id]))
 
         # Batch mm inputs as much as we can: if a request in the batch has
         # multiple modalities or a different modality than the previous one,
@@ -866,16 +856,12 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # in the same batch while still being able to benefit from batching
         # multimodal inputs. The proper solution should be reordering the
         # encoder outputs.
-        grouped_mm_inputs_list = group_mm_inputs_by_modality(mm_inputs)
-
         encoder_outputs = []
-        for grouped_mm_inputs in grouped_mm_inputs_list:
-            batched_mm_inputs = MultiModalKwargs.batch(grouped_mm_inputs)
-            batched_mm_inputs = MultiModalKwargs.as_kwargs(
-                batched_mm_inputs,
+        for _, num_items, mm_kwargs_group in group_mm_kwargs_by_modality(
+                mm_kwargs,
                 device=self.device,
-            )
-
+                pin_memory=self.pin_memory,
+        ):
             # Run the encoder.
             # `curr_group_outputs` is either of the following:
             # 1. A tensor of shape (num_items, feature_size, hidden_size)
@@ -885,12 +871,12 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # depending on the input multimodal items.
             xm.mark_step()
             curr_group_outputs = self.model.get_multimodal_embeddings(
-                **batched_mm_inputs)
+                **mm_kwargs_group)
             xm.mark_step()
 
             sanity_check_mm_encoder_outputs(
                 curr_group_outputs,
-                expected_num_items=len(grouped_mm_inputs),
+                expected_num_items=num_items,
             )
 
             if isinstance(curr_group_outputs, torch.Tensor):
@@ -900,12 +886,16 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 for output in curr_group_outputs:
                     encoder_outputs.append(output)
 
-        # Cache the encoder outputs by mm_hash.
+        # Cache the encoder outputs.
         # NOTE (NickLucche) here we diverge from logic in other runners, as we
         # assume to only have whole mm items to process. Hence we avoid the
         # intrinsic dynamism that `scatter_mm_placeholders` introduces.
-        for mm_hash, pos_info, output in zip(mm_hashes, pos_infos,
-                                             encoder_outputs):
+        for (mm_hash, pos_info), output in zip(
+                mm_hashes_pos,
+                encoder_outputs,
+        ):
+            if req_id not in self.encoder_cache:
+                self.encoder_cache[req_id] = {}
             assert pos_info.is_embed is None, "Expected all positions to be"\
                 " contiguous and embeddings."
             self.encoder_cache[mm_hash] = output
@@ -941,7 +931,7 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     # The encoder output is already processed and stored
                     # in the decoder's KV cache.
                     continue
-
+                
                 mm_hash = mm_hashes[i]
                 assert mm_hash in self.encoder_cache
                 assert pos_info.is_embed is None, "Expected all positions to"\
@@ -1153,7 +1143,6 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             req_ids=req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
             sampled_token_ids=valid_sampled_token_ids,
-            spec_token_ids=None,
             logprobs=logprobs_lists,
             prompt_logprobs_dict=prompt_logprobs_dict,
             pooler_output=[],
@@ -1537,60 +1526,66 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     ) -> None:
         # Profile with multimodal encoder & encoder cache.
         if self.supports_mm_inputs:
-            mm_budget = self.mm_budget
-            assert mm_budget is not None
-
-            # TODO: handle encoder-decoder models once we support them.
-            if (encoder_budget := mm_budget.get_encoder_budget()) > 0:
-                # NOTE: Currently model is profiled with a single non-text
-                # modality with the max possible input tokens even when
-                # it supports multiple.
-                (
-                    dummy_modality,
-                    max_tokens,
-                ) = mm_budget.get_modality_with_max_tokens()
-                (
-                    max_mm_items_per_prompt,
-                    max_mm_items_per_batch,
-                ) = mm_budget.get_max_items(dummy_modality, max_tokens)
-
+            if self.model_config.multimodal_config.skip_mm_profiling:
                 logger.info(
-                    "Encoder cache will be initialized with a budget of "
-                    "%s tokens, and profiled with %s %s items of the maximum "
-                    "feature size.",
-                    encoder_budget,
-                    max_mm_items_per_batch,
-                    dummy_modality,
-                )
+                    "Skipping memory profiling for multimodal encoder and "
+                    "encoder cache.")
+            else:
+                mm_budget = self.mm_budget
+                assert mm_budget is not None
 
-                # Create dummy batch of multimodal inputs.
-                batched_dummy_mm_inputs = self._get_mm_dummy_batch(
-                    dummy_modality,
-                    max_mm_items_per_batch,
-                )
+                # TODO: handle encoder-decoder models once we support them.
+                if (encoder_budget := mm_budget.get_encoder_budget()) > 0:
+                    # NOTE: Currently model is profiled with a single non-text
+                    # modality with the max possible input tokens even when
+                    # it supports multiple.
+                    (
+                        dummy_modality,
+                        max_tokens,
+                    ) = mm_budget.get_modality_with_max_tokens()
+                    (
+                        max_mm_items_per_prompt,
+                        max_mm_items_per_batch,
+                    ) = mm_budget.get_max_items(dummy_modality, max_tokens)
 
-                # Run multimodal encoder.
-                # Isolate encoder graph from post-processing to minimize
-                # impact of recompilation until it's fixed.
-                start = time.perf_counter()
-                xm.mark_step()
-                dummy_encoder_outputs = self.model.get_multimodal_embeddings(
-                    **batched_dummy_mm_inputs)
-                xm.mark_step()
-                xm.wait_device_ops()
-                end = time.perf_counter()
-                logger.info(
-                    "Multimodal Encoder profiling finished in in %.2f [secs].",
-                    end - start)
+                    logger.info(
+                        "Encoder cache will be initialized with a budget of "
+                        "%s tokens, and profiled with %s %s items of the "
+                        "maximum feature size.",
+                        encoder_budget,
+                        max_mm_items_per_batch,
+                        dummy_modality,
+                    )
 
-                sanity_check_mm_encoder_outputs(
-                    dummy_encoder_outputs,
-                    expected_num_items=max_mm_items_per_batch,
-                )
+                    # Create dummy batch of multimodal inputs.
+                    batched_dummy_mm_inputs = self._get_mm_dummy_batch(
+                        dummy_modality,
+                        max_mm_items_per_batch,
+                    )
 
-                # Cache the dummy encoder outputs using dummy mm_hashes.
-                for i, output in enumerate(dummy_encoder_outputs):
-                    self.encoder_cache[f"tmp_{i}"] = output
+                    # Run multimodal encoder.
+                    # Isolate encoder graph from post-processing to minimize
+                    # impact of recompilation until it's fixed.
+                    start = time.perf_counter()
+                    xm.mark_step()
+                    dummy_encoder_outputs = \
+                        self.model.get_multimodal_embeddings(
+                        **batched_dummy_mm_inputs)
+                    xm.mark_step()
+                    xm.wait_device_ops()
+                    end = time.perf_counter()
+                    logger.info(
+                        "Multimodal Encoder profiling finished in %.2f [secs].",
+                        end - start)
+
+                    sanity_check_mm_encoder_outputs(
+                        dummy_encoder_outputs,
+                        expected_num_items=max_mm_items_per_batch,
+                    )
+
+                    # Cache the dummy encoder outputs.
+                    self.encoder_cache["tmp"] = dict(
+                        enumerate(dummy_encoder_outputs))
 
         # Trigger compilation for general shape.
         self._dummy_run(num_tokens, self.num_reqs_max_model_len,
@@ -1826,15 +1821,15 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         dummy_mm_data = dummy_decoder_data.multi_modal_data
 
         # Result in the maximum GPU consumption of the model
-        dummy_mm_item = dummy_mm_data.get_item(modality=modality, item_index=0)
-        dummy_mm_kwargs = MultiModalKwargs.from_items([dummy_mm_item])
+        dummy_mm_item = dummy_mm_data[modality][0]
+        dummy_mm_items = [dummy_mm_item] * max_items_per_batch
 
-        batched_dummy_mm_inputs = MultiModalKwargs.batch([dummy_mm_kwargs] *
-                                                         max_items_per_batch)
-        return MultiModalKwargs.as_kwargs(
-            batched_dummy_mm_inputs,
-            device=self.device,
-        )
+        return next(grouped_mm_kwargs
+                    for _, _, grouped_mm_kwargs in group_mm_kwargs_by_modality(
+                        dummy_mm_items,
+                        device=self.device,
+                        pin_memory=self.pin_memory,
+                    ))
 
 
 def _get_req_paddings(min_req_size: int, max_req_size: int) -> list[int]:
