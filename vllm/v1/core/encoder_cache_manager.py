@@ -43,14 +43,14 @@ class EncoderCacheManager:
     Attributes:
         cache_size: Total cache capacity in encoder tokens.
         num_free_slots: Current available cache capacity in encoder tokens.
-        num_free_able_slots: Capacity that can be immediately reclaimed by
+        num_freeable_slots: Capacity that can be immediately reclaimed by
             evicting entries with zero references (in encoder tokens).
         cached: Mapping from mm_hash to a set of request IDs that currently
             reference the cached entry. If the set is empty, the entry exists
             but is not referenced by any request and is eligible for
             reclamation.
-        freed_able: List of tuples (mm_hash, num_tokens) representing entries
-            whose reference count has dropped to zero and that can be freed to
+        freeable: List of tuples (mm_hash, num_tokens) representing entries
+            whose no current running request is needed and that can be freed to
             make space when needed.
         freed: List of mm_hash strings that were actually evicted since the
             last call to get_freed_mm_hashes(). This list is cleared on return.
@@ -60,12 +60,12 @@ class EncoderCacheManager:
     def __init__(self, cache_size: int):
         self.cache_size = cache_size
         self.num_free_slots = cache_size
-        self.num_free_able_slots = cache_size
+        self.num_freeable_slots = cache_size
 
         self.cached: dict[str, set[str]] = {}
 
         # mm_hash of mm_data => num_encoder_tokens of the mm_data
-        self.freed_able: OrderedDict[str, int] = OrderedDict()
+        self.freeable: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
 
     def has_cache(self, request: Request, input_id: int) -> bool:
@@ -86,8 +86,8 @@ class EncoderCacheManager:
 
         # Cached but currently not referenced by any request
         if not self.cached[mm_hash]:
-            num_tokens = self.freed_able.pop(mm_hash)
-            self.num_free_able_slots -= num_tokens
+            num_tokens = self.freeable.pop(mm_hash)
+            self.num_freeable_slots -= num_tokens
         self.cached[mm_hash].add(request_id)
         return True
 
@@ -95,8 +95,8 @@ class EncoderCacheManager:
         """Check if there's sufficient cache space for a multimodal input.
 
         If there is not enough free space in `num_free_slots` but there is
-        enough reclaimable space in `num_free_able_slots`, entries will be
-        evicted from `freed_able` (their mm_hash appended to `freed`) until
+        enough reclaimable space in `num_freeable_slots`, entries will be
+        evicted from `freeable` (their mm_hash appended to `freed`) until
         enough space is available, and then this method returns True. Returns
         False only if the requested number of tokens exceeds both the free and
         reclaimable capacities combined.
@@ -107,17 +107,17 @@ class EncoderCacheManager:
 
         Returns:
             True if there's enough capacity to hold the encoder output for this
-            input (possibly after reclaiming `freed_able` entries); otherwise
+            input (possibly after reclaiming `freeable` entries); otherwise
             False.
         """
         num_tokens = request.get_num_encoder_tokens(input_id)
         if num_tokens <= self.num_free_slots:
             return True
-        if num_tokens > self.num_free_able_slots:
+        if num_tokens > self.num_freeable_slots:
             return False
         # Free some slot
         while num_tokens > self.num_free_slots:
-            mm_hash, num_free_token = self.freed_able.popitem(last=False)
+            mm_hash, num_free_token = self.freeable.popitem(last=False)
             del self.cached[mm_hash]
             self.freed.append(mm_hash)
             self.num_free_slots += num_free_token
@@ -132,24 +132,25 @@ class EncoderCacheManager:
 
         Note:
             This method assumes can_allocate() returned True for the same input
-            and will decrease both `num_free_slots` and `num_free_able_slots`
+            and will decrease both `num_free_slots` and `num_freeable_slots`
             by the number of encoder tokens for the input.
         """
         mm_hash = request.mm_hashes[input_id]
         request_id = request.request_id
+        num_encoder_tokens = request.get_num_encoder_tokens(input_id)
         if mm_hash not in self.cached:
             self.cached[mm_hash] = set()
 
         self.cached[mm_hash].add(request_id)
-        self.num_free_slots -= request.get_num_encoder_tokens(input_id)
-        self.num_free_able_slots -= request.get_num_encoder_tokens(input_id)
+        self.num_free_slots -= num_encoder_tokens
+        self.num_freeable_slots -= num_encoder_tokens
 
     def get_cached_input_ids(self, request: Request) -> set[int]:
         """Get all cached multimodal input IDs for a request.
 
         Returns the set of input IDs whose `mm_hash` exists in the cache map.
         This includes entries that are currently unreferenced (and thus present
-        in `freed_able`); for such entries, freeing for this request will be a
+        in `freeable`); for such entries, freeing for this request will be a
         no-op.
         """
         return {
@@ -162,7 +163,7 @@ class EncoderCacheManager:
         """Free cache space for a single multimodal input's encoder output.
 
         When the reference set for the corresponding `mm_hash` becomes empty,
-        the entry is appended to `freed_able` and `num_free_able_slots` is
+        the entry is appended to `freeable` and `num_freeable_slots` is
         increased by the number of encoder tokens for that input. The entry is
         not physically freed until capacity is needed (e.g., by
         `can_allocate`).
@@ -176,8 +177,8 @@ class EncoderCacheManager:
         self.cached[mm_hash].discard(req_id)
         if not self.cached[mm_hash]:
             num_tokens = request.get_num_encoder_tokens(input_id)
-            self.freed_able[mm_hash] = num_tokens
-            self.num_free_able_slots += num_tokens
+            self.freeable[mm_hash] = num_tokens
+            self.num_freeable_slots += num_tokens
 
     def free(self, request: Request) -> None:
         """Free all cached encoder outputs for a request.
