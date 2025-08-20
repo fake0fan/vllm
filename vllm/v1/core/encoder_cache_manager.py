@@ -64,19 +64,19 @@ class EncoderCacheManager:
 
         self.cached: dict[str, set[str]] = {}
 
-        # List of mm_hash
+        # mm_hash of mm_data => num_encoder_tokens of the mm_data
         self.freed_able: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
 
     def has_cache(self, request: Request, input_id: int) -> bool:
-        """Check whether the encoder output for a specific multimodal input is
-        cached.
+        """Check if encoder output for a specific multimodal input is cached.
 
-        If the entry exists but is currently unreferenced (present with an
-        empty request set and listed in `freed_able`), it is moved back to the
-        active set: the item is removed from `freed_able`,
-        `num_free_able_slots` is decreased accordingly, and the current
-        request ID is added to its reference set.
+        Args:
+            request: The request containing the multimodal input
+            input_id: Index of the multimodal input within the request
+
+        Returns:
+            True if the encoder output for this input is already cached
         """
         mm_hash = request.mm_hashes[input_id]
         request_id = request.request_id
