@@ -433,6 +433,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         new/resumed/paused/finished request in the batch.
         """
         # Remove finished requests from the cached states.
+        # The multimodal embedding cache is not remove here and only remove when scheduler free it
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
         # Remove the finished requests from the persistent batch.
