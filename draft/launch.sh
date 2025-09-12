@@ -10,7 +10,7 @@ wait_for_server() {
     ' && return 0 || return 1
 }
 
-MODEL="/path/to/model/Qwen2.5-VL-3B-Instruct"
+MODEL="/workspace/vllm/Qwen2.5-VL-3B-Instruct/" 
 
 LOG_PATH=${LOG_PATH:-./logs}
 mkdir -p "$LOG_PATH"
@@ -19,8 +19,8 @@ ENCODE_PORT=19534
 PREFILL_DECODE_PORT=19535
 PROXY_PORT=10001
 
-GPU_E=1
-GPU_PD=7
+GPU_E=4
+GPU_PD=5
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG="$LOG_PATH/encoder.log"
@@ -29,6 +29,26 @@ PROXY_LOG="$LOG_PATH/proxy.log"
 PID_FILE="./pid.txt"
 
 SHARED_STORAGE_PATH="/path/to/your/share/storage"
+
+MOONCAKE_MASTER_PORT=50051
+MOONCAKE_METADATA_PORT=8080
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+# mooncake_master --port $MOONCAKE_MASTER_PORT &
+# echo $! >> "$PID_FILE"
+
+# mooncake_http_metadata_server --port $MOONCAKE_METADATA_PORT &
+# echo $! >> "$PID_FILE"
+
+# sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
+#     -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
+#     mooncake_config/producer_template.json > producer.json
+# sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
+#     -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
+#     mooncake_config/consumer_template.json > consumer.json
+
+export VLLM_LOGGING_LEVEL=DEBUG
 
 ###############################################################################
 # Encoder worker
@@ -39,16 +59,14 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --enable-request-id-headers \
     --max-num-seqs 128 \
     --enforce-eager \
-    --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_producer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$SHARED_STORAGE_PATH"'"
-        }
-    }' \
+    --ec-transfer-config \
+        '{"ec_connector":"ECSharedStorageConnector","ec_role":"ec_producer","ec_mooncake_config_path":"'${SCRIPT_DIR}'/producer.json"}' \
     >"$ENC_LOG" 2>&1 &
 
-echo $! >> "$PID_FILE"
+pid=$!
+pgid=$(ps -o pgid= -p $pid)
+echo $pid >> "$PID_FILE"
+echo $pgid >> "$PID_FILE"
 
 ###############################################################################
 # Prefill / decode worker
@@ -59,16 +77,14 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --enable-request-id-headers \
     --max-num-seqs 128 \
     --enforce-eager \
-    --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_consumer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$SHARED_STORAGE_PATH"'"
-        }
-    }' \
+    --ec-transfer-config \
+        '{"ec_connector":"ECSharedStorageConnector","ec_role":"ec_consumer","ec_mooncake_config_path":"'${SCRIPT_DIR}'/consumer.json"}' \
     >"$PD_LOG" 2>&1 &
 
-echo $! >> "$PID_FILE"
+pid=$!
+pgid=$(ps -o pgid= -p $pid)
+echo $pid >> "$PID_FILE"
+echo $pgid >> "$PID_FILE"
 
 # Wait until both workers are ready
 wait_for_server "$ENCODE_PORT"
@@ -77,7 +93,7 @@ wait_for_server "$PREFILL_DECODE_PORT"
 ###############################################################################
 # Proxy
 ###############################################################################
-python /path/to/vllm/vllm/draft/proxy.py \
+python proxy.py \
     --host "127.0.0.1" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
@@ -87,4 +103,4 @@ python /path/to/vllm/vllm/draft/proxy.py \
 echo $! >> "$PID_FILE"
 
 wait_for_server "$PROXY_PORT"
-echo "All services are up!"
+echo "All services #!/bin/bash

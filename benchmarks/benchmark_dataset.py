@@ -881,6 +881,7 @@ class VisionArenaDataset(HuggingFaceDataset):
     SUPPORTED_DATASET_PATHS = {
         "lmarena-ai/VisionArena-Chat": lambda x: x["conversation"][0][0]["content"],
         "lmarena-ai/vision-arena-bench-v0.1": lambda x: x["turns"][0][0]["content"],
+        "/workspace/lmarena-ai/VisionArena-Chat": lambda x: x["conversation"][0][0]["content"],
     }
     IS_MULTIMODAL = True
 
