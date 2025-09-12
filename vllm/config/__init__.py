@@ -3245,6 +3245,9 @@ class ECTransferConfig:
     """The Python module path to dynamically load the KV connector from.
     Only supported in V1."""
 
+    ec_mooncake_config_path: Optional[str] = None
+    """Mooncake path to load config"""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,

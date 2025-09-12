@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 import torch
 
+from vllm.config import ECProducer
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
@@ -65,7 +66,7 @@ class ECConnectorBase(ABC):
         self._connector_metadata: Optional[ECConnectorMetadata] = None
         self._vllm_config = vllm_config
         self._role = role
-        self._is_producer = (vllm_config.ec_transfer_config.ec_role == 'ec_producer')
+        self._is_producer = (vllm_config.ec_transfer_config.ec_role == ECProducer)
 
     @property
     def role(self) -> ECConnectorRole:

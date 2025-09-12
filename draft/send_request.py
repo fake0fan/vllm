@@ -13,6 +13,7 @@ async def async_query_openai(query, model_path, port):
         api_key="EMPTY",
         timeout = 100000,
     )
+    print(port)
     completion = await aclient.chat.completions.create(
         model=model_path,
         messages=[

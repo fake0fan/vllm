@@ -1477,6 +1477,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
                     return make_empty_encoder_model_runner_output(scheduler_output)
                     
         if not scheduler_output.total_num_scheduled_tokens:
+            if self.vllm_config.ec_transfer_config.ec_role == "ec_producer":
+                with self.maybe_get_ec_connector_output(
+                        scheduler_output,
+                        encoder_cache=self.encoder_cache,      
+                ) as ec_connector_output:
+                    self._execute_mm_encoder(scheduler_output)
+                    return EMPTY_MODEL_RUNNER_OUTPUT
+                    
+
             if not has_kv_transfer_group():
                 # Return empty ModelRunnerOutput if there's no work to do.
                 return EMPTY_MODEL_RUNNER_OUTPUT

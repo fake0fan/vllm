@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import itertools
+import sys
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -105,6 +106,7 @@ class Scheduler(SchedulerInterface):
                 # TODO(Long) Set this when set up
                 self.cache_config.enable_prefix_caching=False
                 self.max_model_len = 1
+                self.max_num_scheduled_tokens = sys.maxsize
         
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
@@ -403,6 +405,7 @@ class Scheduler(SchedulerInterface):
                         self.kv_cache_manager.create_empty_block_list())
                     num_new_local_computed_tokens = 0
                     num_computed_tokens = request.num_computed_tokens
+                
 
                 encoder_inputs_to_schedule = None
                 new_encoder_compute_budget = encoder_compute_budget
