@@ -13,12 +13,17 @@ from typing import List, Optional
 
 import torch
 
-
-class ECCacheBufferBase(ABC):
+class ECStoreBufferBase(ABC):
     """
-    Abstract base class for a ECCache buffer.
-    """
+    Abstract base class for a ECCache storage buffer with key-value semantics.
+    This class provides a simple key-value storage buffer abstract with basic
+    put/get operations, which enables flexible ECCache transfer granular
+    control.
 
+    The functionality is similar to a distributed key-value store, where:
+    - Key: A unique string identifier for the cached entry
+    - Value: Tensor to be stored and retrieved
+    """
     @abstractmethod
     def close(self) -> None:
         """Close the buffer and release resources.
@@ -31,24 +36,11 @@ class ECCacheBufferBase(ABC):
         """
         raise NotImplementedError
 
-
-class ECStoreBufferBase(ECCacheBufferBase):
-    """
-    Abstract base class for a ECCache storage buffer with key-value semantics.
-    This class provides a simple key-value storage buffer abstract with basic
-    put/get operations, which enables flexible ECCache transfer granular
-    control.
-
-    The functionality is similar to a distributed key-value store, where:
-    - Key: A unique string identifier for the cached entry
-    - Value: Tensor to be stored and retrieved
-    """
-
     @abstractmethod
     def put(
         self,
-        key: List[str],
-        value: List[torch.Tensor],
+        key: str,
+        value: torch.Tensor,
     ) -> None:
         """Store a key-value pair in the buffer.
 
@@ -58,17 +50,22 @@ class ECStoreBufferBase(ECCacheBufferBase):
                 generated during model forwarding.
 
             value (Optional[torch.Tensor]): Tensor to be stored.
-
-        Raises:
-            NotImplementedError: This method must be implemented in subclasses.
         """
-        raise NotImplementedError
+        pass
+
+    @abstractmethod
+    def batch_put(
+        self,
+        keys: List[str],
+        values: List[torch.Tensor],
+    ) -> None:
+        pass
 
     @abstractmethod
     def get(
         self,
-        key: List[str],
-    ) -> List[torch.Tensor]:
+        key: str,
+    ) -> Optional[torch.Tensor]:
         """Retrieve a value from the buffer by key.
 
         Args:
@@ -78,8 +75,12 @@ class ECStoreBufferBase(ECCacheBufferBase):
 
         Returns:
             Optional[torch.Tensor]: Stored tensor if exists, None otherwise.
-
-        Raises:
-            NotImplementedError: This method must be implemented in subclasses.
         """
-        raise NotImplementedError
+        pass
+
+    @abstractmethod
+    def batch_get(
+        self,
+        keys: List[str],
+    ) -> List[Optional[torch.Tensor]]:
+        pass

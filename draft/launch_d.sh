@@ -19,8 +19,8 @@ ENCODE_PORT=19534
 PREFILL_DECODE_PORT=19535
 PROXY_PORT=10001
 
-GPU_E=4
-GPU_PD=5
+GPU_E=6
+GPU_PD=7
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG="$LOG_PATH/encoder.log"
@@ -28,39 +28,26 @@ PD_LOG="$LOG_PATH/pd.log"
 PROXY_LOG="$LOG_PATH/proxy.log"
 PID_FILE="./pid.txt"
 
-SHARED_STORAGE_PATH="/path/to/your/share/storage"
-
-MOONCAKE_MASTER_PORT=50051
-MOONCAKE_METADATA_PORT=8080
-SCRIPT_PATH="$(readlink -f "$0")"
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-
-# mooncake_master --port $MOONCAKE_MASTER_PORT &
-# echo $! >> "$PID_FILE"
-
-# mooncake_http_metadata_server --port $MOONCAKE_METADATA_PORT &
-# echo $! >> "$PID_FILE"
-
-# sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
-#     -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
-#     mooncake_config/producer_template.json > producer.json
-# sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
-#     -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
-#     mooncake_config/consumer_template.json > consumer.json
-
-export VLLM_LOGGING_LEVEL=DEBUG
+SHARED_STORAGE_PATH="/workspace/epd/draft/vllm/cache"
 
 ###############################################################################
 # Encoder worker
 ###############################################################################
+VLLM_TORCH_PROFILER_DIR=./e_profile \
 CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization 0.0 \
     --port "$ENCODE_PORT" \
     --enable-request-id-headers \
+    --no-enable-prefix-caching \
     --max-num-seqs 128 \
-    --enforce-eager \
-    --ec-transfer-config \
-        '{"ec_connector":"ECSharedStorageConnector","ec_role":"ec_producer","ec_mooncake_config_path":"'${SCRIPT_DIR}'/producer.json"}' \
+    --ec-transfer-config '{
+        "ec_connector": "ECSharedStorageConnector",
+        "ec_role": "ec_producer",
+        "ec_connector_extra_config": {
+            "shared_storage_path": "'"$SHARED_STORAGE_PATH"'",
+            "ec_max_num_scheduled_tokens": "1000000000000000000"
+        }
+    }' \
     >"$ENC_LOG" 2>&1 &
 
 pid=$!
@@ -71,14 +58,20 @@ echo $pgid >> "$PID_FILE"
 ###############################################################################
 # Prefill / decode worker
 ###############################################################################
+VLLM_TORCH_PROFILER_DIR=./pd_profile \
 CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
     --port "$PREFILL_DECODE_PORT" \
     --enable-request-id-headers \
     --max-num-seqs 128 \
-    --enforce-eager \
     --ec-transfer-config \
-        '{"ec_connector":"ECSharedStorageConnector","ec_role":"ec_consumer","ec_mooncake_config_path":"'${SCRIPT_DIR}'/consumer.json"}' \
+        '{
+            "ec_connector":"ECSharedStorageConnector",
+            "ec_role":"ec_consumer",
+            "ec_connector_extra_config": {
+                "shared_storage_path": "'"$SHARED_STORAGE_PATH"'"
+            }
+        }' \
     >"$PD_LOG" 2>&1 &
 
 pid=$!
@@ -103,4 +96,4 @@ python proxy.py \
 echo $! >> "$PID_FILE"
 
 wait_for_server "$PROXY_PORT"
-echo "All services #!/bin/bash
+echo "All services are up"

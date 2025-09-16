@@ -50,7 +50,7 @@ class ECSharedStorageConnector(ECConnectorBase):
     # NOTE: This is Simple debug implementation of the EC connector.
     # It save / load the EC cache to / from the disk.
 
-    def __init__(self, vllm_config: "VllmConfig", role: ECConnectorBase):
+    def __init__(self, vllm_config: "VllmConfig", role: ECConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
         # req_id -> index -> MMMeta
         self._mm_datas_need_loads: dict[str, int] = {}
@@ -74,10 +74,10 @@ class ECSharedStorageConnector(ECConnectorBase):
         assert encoder_cache is not None
         if metadata is None:
             logger.warning(
-                "In connector.start_load_kv, but the connector metadata is None"
+                "In connector.start_load_caches, but the connector metadata is None"
             )
             return
-        # Load the KV for each request each layer
+        # Load the EC for each mm datas
         for mm_data in metadata.mm_datas:
             if mm_data.mm_hash in encoder_cache:
                 continue
@@ -87,7 +87,7 @@ class ECSharedStorageConnector(ECConnectorBase):
             logger.debug(f"Success load encoder cache for hash {mm_data.mm_hash}")
 
     def save_caches(self, **kwargs) -> None:
-        """Start saving the KV cache of the layer from encoder cache
+        """Start saving the EC cache for each mm_datas from encoder cache
 
         Args:
             **kwargs: additional arguments for the save operation.

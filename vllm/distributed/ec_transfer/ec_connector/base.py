@@ -31,7 +31,7 @@ import torch
 from vllm.config import ECProducer
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.outputs import (KVConnectorOutput, ECConnectorOutput)
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -66,7 +66,7 @@ class ECConnectorBase(ABC):
         self._connector_metadata: Optional[ECConnectorMetadata] = None
         self._vllm_config = vllm_config
         self._role = role
-        self._is_producer = (vllm_config.ec_transfer_config.ec_role == ECProducer)
+        self._is_producer = vllm_config.ec_transfer_config.is_ec_producer
 
     @property
     def role(self) -> ECConnectorRole:
@@ -128,7 +128,6 @@ class ECConnectorBase(ABC):
         """
         Start loading the cache from the connector to vLLM's encoder cache.
         This is called before _gather_mm_embeddings for EC Connector
-        and before execute_model for KV Connector
         For EC the encoder_cache and mm_hash is store in kwargs
 
         Args:
@@ -215,12 +214,12 @@ class ECConnectorBase(ABC):
         """
         pass
 
-    def update_connector_output(self, connector_output: KVConnectorOutput):
+    def update_connector_output(self, connector_output: ECConnectorOutput):
         """
-        Update KVConnector state from worker-side connectors output.
+        Update ECConnector state from worker-side connectors output.
 
         Args:
-            connector_output (KVConnectorOutput): the worker-side
+            connector_output (ECConnectorOutput): the worker-side
                 connectors output.
         """
         return

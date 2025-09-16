@@ -1,5 +1,6 @@
 # api_proxy.py
 import asyncio
+import copy
 import json
 import time
 import uuid
@@ -61,10 +62,14 @@ async def forward_streaming_request(
     headers = {"x-request-id": request_id}
     # Skip request to encoder instance if we don't have mm input
     if has_mm_input(request_data):
+        encoder_request_data = copy.deepcopy(request_data)
+        encoder_request_data["max_tokens"] = 1
+        if "max_completion_tokens" in encoder_request_data:
+            encoder_request_data["max_completion_tokens"] = 1
         task1 = asyncio.create_task(
             encode_session.post(
                 f"{e_server_url}/v1/chat/completions",
-                json=request_data,
+                json=encoder_request_data,
                 headers=headers
             )
         )
@@ -107,11 +112,15 @@ async def forward_non_streaming_request(
     headers = {"x-request-id": request_id}
     # Skip request to encoder instance if we don't have mm input
     if has_mm_input(request_data):
+        encoder_request_data = copy.deepcopy(request_data)
+        encoder_request_data["max_tokens"] = 1
+        if "max_completion_tokens" in encoder_request_data:
+            encoder_request_data["max_completion_tokens"] = 1
         # Start request to encode server
         task1 = asyncio.create_task(
             encode_session.post(
                 f"{e_server_url}/v1/chat/completions",
-                json=request_data,
+                json=encoder_request_data,
                 headers=headers
             )
         )
@@ -211,14 +220,14 @@ async def health_check():
         
         health_status = {
             "proxy": "healthy",
-            "encode_servers": "healthy" if encode_healthy is True else "unhealthy",
-            "prefill_decode_servers": "healthy" if decode_healthy is True else "unhealthy"
+            "encode_servers": "healthy" if encode_healthy else "unhealthy",
+            "prefill_decode_servers": "healthy" if decode_healthy else "unhealthy"
         }
         
-        if not (encode_healthy is True and decode_healthy is True):
-            return JSONResponse(content=health_status, status_code=503)
-        
-        return health_status
+        if encode_healthy is True and decode_healthy is True:
+            return JSONResponse(content={"status": "OK"})
+
+        return JSONResponse(content=health_status, status_code=503)
         
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -226,6 +235,65 @@ async def health_check():
             content={"proxy": "unhealthy", "error": str(e)},
             status_code=503
         )
+
+async def send_profile_cmd(request: Request, req_data, profiler_cmd):
+    assert profiler_cmd in ["start", "stop"]
+    # Send to all encoder and decoder, leaving iterator in same state.
+
+    async def post(url, req_data, session):
+        async with session.post(url, json=req_data) as response:
+            return await response.json(content_type=None)
+
+    tasks = []
+    for e_url in app.state.e_urls:
+        tasks.append(
+            post(f"{e_url}/{profiler_cmd}_profile", req_data, encode_session)
+        )
+    
+    for pd_url in app.state.pd_urls:
+        tasks.append(
+            post(f"{pd_url}/{profiler_cmd}_profile", req_data, decode_session)
+        )
+
+    responses = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, r in enumerate(responses):
+        if isinstance(r, Exception):
+            print(f"Response {i} was an exception: {r}", flush=True)
+            raise r
+
+    return responses
+
+
+@app.post("/start_profile")
+async def start_profile(request: Request):
+    try:
+        req_data = await request.json()
+        return await send_profile_cmd(request, req_data, "start")
+
+    except Exception as e:
+        import sys
+        import traceback
+        exc_info = sys.exc_info()
+        print("Error occurred in disagg prefill proxy server"
+              " - start_profile endpoint")
+        print(e)
+        print("".join(traceback.format_exception(*exc_info)))
+
+
+@app.post("/stop_profile")
+async def stop_profile(request: Request):
+    try:
+        req_data = await request.json()
+        return await send_profile_cmd(request, req_data, "stop")
+
+    except Exception as e:
+        import sys
+        import traceback
+        exc_info = sys.exc_info()
+        print("Error occurred in disagg prefill proxy server"
+              " - stop_profile endpoint")
+        print(e)
+        print("".join(traceback.format_exception(*exc_info)))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="API Proxy for distributed vLLM servers")

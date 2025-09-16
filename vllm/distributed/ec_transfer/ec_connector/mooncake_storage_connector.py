@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import hashlib
-import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-import safetensors
-import torch
+from typing import TYPE_CHECKING, Any, Optional
+import asyncio
+import time
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import (
@@ -14,11 +11,9 @@ from vllm.distributed.ec_transfer.ec_connector.base import (
 from vllm.distributed.ec_transfer.ec_lookup_buffer.mooncake_store import (
     ECMooncakeStore)
 from vllm.logger import init_logger
-from vllm.config import ECProducer
 from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
-    from vllm.forward_context import ForwardContext
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
@@ -56,7 +51,6 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         super().__init__(vllm_config=vllm_config, role=role)
         # req_id -> index -> mm_hash
         self._mm_datas_need_loads: dict[str, dict[int, MMMeta]] = {}
-        self.transfer_config = vllm_config.ec_transfer_config
         self.store = ECMooncakeStore(vllm_config)
 
     def start_load_caches(self, **kwargs) -> None:
@@ -70,22 +64,20 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         # Get the metadata
         metadata: ECConnectorMetadata = self._get_connector_metadata()
         assert isinstance(metadata, ECMooncakeStorageConnectorMetadata)
-        encoder_cache = kwargs.get("encoder_cache")   # returns None if missing
-        assert encoder_cache is not None
-        if metadata is None:
-            logger.warning(
-                "In ec_connector.start_load_caches, but the connector metadata is None"
-            )
+        if not metadata:
             return
 
-        for mm_data in metadata.mm_datas:
-            if mm_data.mm_hash in encoder_cache:
-                continue
+        encoder_cache = kwargs.get("encoder_cache")   # returns None if missing
+        assert encoder_cache is not None
 
-            ec_cache = self.store.get([mm_data.mm_hash])
-            encoder_cache[mm_data.mm_hash] = ec_cache[0]
-            logger.debug(("Failed" if ec_cache[0] is None else "Succeeded")\
-                        + f" load hash for {mm_data.mm_hash}")
+        mm_hashs = [mm_data.mm_hash for mm_data in metadata.mm_datas
+                    if mm_data.mm_hash not in encoder_cache]
+        tensors = self.store.batch_get(mm_hashs)
+
+        for mm_hash, ec_cache in zip(mm_hashs, tensors):
+            encoder_cache[mm_hash] = ec_cache
+            logger.debug(("Failed" if ec_cache is None else "Succeeded")\
+                        + f" load hash for {mm_hash}")
 
     def save_caches(self, **kwargs) -> None:
         """Start saving the KV cache of the layer from encoder cache
@@ -102,7 +94,7 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         mm_hash = kwargs.get("mm_hash")
         assert encoder_cache is not None
         assert mm_hash is not None
-        self.store.put([mm_hash], [encoder_cache[mm_hash]])
+        self.store.batch_put([mm_hash], [encoder_cache[mm_hash]])
     
     def wait_for_save(self):
         return
@@ -120,7 +112,8 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         Returns:
             List of bool indicate that ith mm_data exist in cache or not
         """
-        return self.store.exists(request.mm_hashes)
+        # return asyncio.run(self.store.batch_exists(request.mm_hashes))
+        return self.store.batch_exists(request.mm_hashes)
 
     def update_state_after_alloc(self, 
                                  request: "Request",
