@@ -32,14 +32,16 @@ SHARED_STORAGE_PATH="/workspace/epd/draft/vllm/cache"
 
 MOONCAKE_ZEROCOPY=false
 MOONCAKE_MASTER_PORT=50051
+MOONCAKE_MASTER_LOG="$LOG_PATH/mooncake_master.log"
 MOONCAKE_METADATA_PORT=8080
+MOONCAKE_METADATA_LOG="$LOG_PATH/mooncake_metadata.log"
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
-mooncake_master --port $MOONCAKE_MASTER_PORT &
+mooncake_master --port $MOONCAKE_MASTER_PORT >"$MOONCAKE_MASTER_LOG" 2>&1 &
 echo $! >> "$PID_FILE"
 
-mooncake_http_metadata_server --port $MOONCAKE_METADATA_PORT &
+mooncake_http_metadata_server --port $MOONCAKE_METADATA_PORT >"$MOONCAKE_METADATA_LOG" 2>&1 &
 echo $! >> "$PID_FILE"
 
 sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
