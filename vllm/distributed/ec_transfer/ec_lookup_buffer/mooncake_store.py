@@ -16,18 +16,16 @@ import torch
 import numpy as np
 import asyncio
 import math
+import threading
 
-from vllm.distributed.kv_transfer.kv_connector\
-    .v1.p2p.tensor_memory_pool import (
+from vllm.distributed.ec_transfer.utils.tensor_memory_pool import (
     TensorMemoryPool)
 from vllm.config import VllmConfig
-from vllm.distributed.ec_transfer.ec_lookup_buffer.base import (
-    ECStoreBufferBase)
 from vllm.logger import init_logger
 
 DEFAULT_GLOBAL_SEGMENT_SIZE = 3355443200  # 3.125 GiB
 DEFAULT_LOCAL_BUFFER_SIZE = 1073741824  # 1.0 GiB
-DEFAULT_TENSOR_POOL_SIZE = 1073741824  # 1.0 GiB
+DEFAULT_TENSOR_POOL_SIZE = int(1073741824 * 3)  # 1.0 GiB
 
 # View map for unsupported dtypes (add more as needed, e.g., for future types)
 VIEW_MAP = {
@@ -78,7 +76,7 @@ class ECMooncakeTensorPoolMetadata:
     addr: str
 
 
-class ECMooncakeStore(ECStoreBufferBase):
+class ECMooncakeStore:
     """
     Currently, it only supports zero-copy get/put with
     following data path gpu->cpu->cpu->gpu
@@ -145,12 +143,17 @@ class ECMooncakeStore(ECStoreBufferBase):
 
         logger.info("MooncakeConnector initialized successfully.")
 
+        # Zero copy init
         if self.config.zero_copy:
             self.tensor_pool = TensorMemoryPool(
                 max_block_size=DEFAULT_TENSOR_POOL_SIZE)
             self.store.register_buffer(
                 self.tensor_pool.base_address, DEFAULT_TENSOR_POOL_SIZE)
             self.fifo_pool_queue = deque()
+        
+        # Put async init
+        self.put_queue = set()
+        self.put_queue_cv = threading.Condition()
 
     def close(self):
         if self.config.zero_copy:
@@ -273,17 +276,21 @@ class ECMooncakeStore(ECStoreBufferBase):
         raise NotImplementedError(
             "Single put is not supported. Use batch_put([key], [tensor]) instead."
         )
+    
+    def wait_for_put(self):
+        with self.put_queue_cv:
+            while self.put_queue:
+                self.put_queue_cv.wait()
 
-    def batch_put(
-            self, keys: List[str], tensors: List[torch.Tensor]
-        ) -> None:
+    async def batch_put(self, keys: List[str], tensors: List[torch.Tensor]) -> None:
+        with self.put_queue_cv:
+            self.put_queue.update(keys)
+
         if self.config.zero_copy:
-            return self._zero_copy_batch_put(keys, tensors)
-        return self._batch_put(keys, tensors)
+            return await self._zero_copy_batch_put(keys, tensors)
+        return await self._batch_put(keys, tensors)
 
-    def _zero_copy_batch_put(
-            self, keys: List[str], tensors: List[torch.Tensor]
-        ) -> None:
+    async def _zero_copy_batch_put(self, keys: List[str], tensors: List[torch.Tensor]) -> None:
         if not keys:
             return
 
@@ -292,10 +299,10 @@ class ECMooncakeStore(ECStoreBufferBase):
         meta_values = []
         buffer_addrs = []
         buffer_sizes = []
-        for k, tensor in zip(keys, tensors):
+        for key, tensor in zip(keys, tensors):
             buffer_addr = self._pool_store_tensor(tensor)
             self.fifo_pool_queue.append(
-                ECMooncakeTensorPoolMetadata(k, buffer_addr)
+                ECMooncakeTensorPoolMetadata(key, buffer_addr)
             )
             buffer_size = tensor.numel() * tensor.element_size()
             buffer_addrs.append(buffer_addr)
@@ -307,16 +314,19 @@ class ECMooncakeStore(ECStoreBufferBase):
             }
             meta_str = json.dumps(meta)
             meta_bytes = meta_str.encode('utf-8')
-            key_meta = self.metadata_key(k)
+            key_meta = self.metadata_key(key)
             meta_keys.append(key_meta)
             meta_values.append(meta_bytes)
 
         try:
-            # FIXME: make it more consistent, resilent
-            self.store.put_batch(
-                meta_keys,
-                meta_values,
-                self.replica_config
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.store.put_batch,
+                    meta_keys,
+                    meta_values,
+                    self.replica_config
+                ),
+                timeout=self.config.transfer_timeout,
             )
         except Exception as e:
             logger.error(
@@ -326,21 +336,28 @@ class ECMooncakeStore(ECStoreBufferBase):
 
         try:
             # Zero-copy put
-            self.store.batch_put_from(
-                keys,
-                buffer_addrs,
-                buffer_sizes,
-                self.replica_config
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.store.batch_put_from,
+                    keys,
+                    buffer_addrs,
+                    buffer_sizes,
+                    self.replica_config
+                ),
+                timeout=self.config.transfer_timeout,
             )
         except Exception as e:
             logger.error(
                 f"Failed to put keys {",".join(keys)} using batch_put_from: "
                 f"{type(e).__name__}: {str(e)}"
             )
+        
+        with self.put_queue_cv:
+            self.put_queue.difference_update(keys)
+            if not self.put_queue:
+                self.put_queue_cv.notify()
 
-    def _batch_put(
-            self, keys: List[str], tensors: List[torch.Tensor]
-        ) -> None:
+    async def _batch_put(self, keys: List[str], tensors: List[torch.Tensor]) -> None:
         bytes_list = []
         for tensor in tensors:
             if tensor.get_device() != -1:
@@ -366,18 +383,39 @@ class ECMooncakeStore(ECStoreBufferBase):
             bytes_list.append(len_bytes + meta_bytes + data_bytes)
 
         try:
-            self.store.put_batch(
-                keys, bytes_list, self.replica_config
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.store.put_batch,
+                    keys,
+                    bytes_list,
+                    self.replica_config
+                ),
+                timeout=self.config.transfer_timeout,
             )
         except Exception as e:
             logger.error(
                 f"Failed to put keys {",".join(keys)} using put_batch: "
                 f"{type(e).__name__}: {str(e)}"
             )
+        
+        with self.put_queue_cv:
+            self.put_queue.difference_update(keys)
+            if not self.put_queue:
+                self.put_queue_cv.notify()
     
     # ==============================
     # Tensor pool helper functions
     # ==============================
+
+    def _pool_eviction(self) -> None:
+        evicted_buffer = self.fifo_pool_queue.popleft()
+        self.tensor_pool.free(evicted_buffer.addr)
+        self.store.remove(evicted_buffer.key)
+        # Currently stall the process with mooncake 0.3.6
+        # count = self.store.remove_by_regex(
+        #     f"^(?:{evicted_buffer.key}|{self.metadata_key(evicted_buffer.key)})$"
+        # )
+        # assert count == 2
 
     def _pool_allocate(self, size: int) -> int:
         assert size <= DEFAULT_TENSOR_POOL_SIZE
@@ -393,8 +431,7 @@ class ECMooncakeStore(ECStoreBufferBase):
                 if not self.fifo_pool_queue:
                     raise ValueError("Insufficient memory")
 
-                evicted_buffer = self.fifo_pool_queue.popleft()
-                self.tensor_pool.free(evicted_buffer.addr)
+                self._pool_eviction()
     
     def _pool_store_tensor(self, tensor: torch.Tensor) -> int:
         while True:
@@ -408,5 +445,4 @@ class ECMooncakeStore(ECStoreBufferBase):
                 if not self.fifo_pool_queue:
                     raise ValueError("Insufficient memory")
 
-                evicted_buffer = self.fifo_pool_queue.popleft()
-                self.tensor_pool.free(evicted_buffer.addr)
+                self._pool_eviction()

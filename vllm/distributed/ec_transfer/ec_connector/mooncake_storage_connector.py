@@ -70,11 +70,11 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         encoder_cache = kwargs.get("encoder_cache")   # returns None if missing
         assert encoder_cache is not None
 
-        mm_hashs = [mm_data.mm_hash for mm_data in metadata.mm_datas
+        mm_hashes = [mm_data.mm_hash for mm_data in metadata.mm_datas
                     if mm_data.mm_hash not in encoder_cache]
-        tensors = self.store.batch_get(mm_hashs)
+        tensors = self.store.batch_get(mm_hashes)
 
-        for mm_hash, ec_cache in zip(mm_hashs, tensors):
+        for mm_hash, ec_cache in zip(mm_hashes, tensors):
             encoder_cache[mm_hash] = ec_cache
             logger.debug(("Failed" if ec_cache is None else "Succeeded")\
                         + f" load hash for {mm_hash}")
@@ -94,10 +94,12 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         mm_hash = kwargs.get("mm_hash")
         assert encoder_cache is not None
         assert mm_hash is not None
-        self.store.batch_put([mm_hash], [encoder_cache[mm_hash]])
+        asyncio.run(
+            self.store.batch_put([mm_hash], [encoder_cache[mm_hash]])
+        )
     
     def wait_for_save(self):
-        return
+        self.store.wait_for_put()
 
     def check_caches_exist(
         self,
@@ -112,7 +114,6 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         Returns:
             List of bool indicate that ith mm_data exist in cache or not
         """
-        # return asyncio.run(self.store.batch_exists(request.mm_hashes))
         return self.store.batch_exists(request.mm_hashes)
 
     def update_state_after_alloc(self, 
