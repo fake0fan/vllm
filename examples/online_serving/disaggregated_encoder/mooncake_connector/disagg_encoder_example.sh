@@ -5,7 +5,7 @@ set -euo pipefail
 ###############################################################################
 # Configuration -- override via env before running
 ###############################################################################
-MODEL="${MODEL:-/workspace/vllm/Qwen2.5-VL-3B-Instruct/}"
+MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 
 LOG_PATH="${LOG_PATH:-./logs}"
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -17,6 +17,14 @@ GPU_PD="${GPU_PD:-7}"
 
 SHARED_STORAGE_PATH="${SHARED_STORAGE_PATH:-/tmp/}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
+
+MOONCAKE_MASTER_PORT=50051
+MOONCAKE_METADATA_PORT=8080
+MOONCAKE_REPLICA_NUM=1
+MOONCAKE_FAST_TRANSFER=true
+MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=3 # GB
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 ###############################################################################
 # Dependencies check ##########################################################
@@ -49,6 +57,9 @@ START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG="$LOG_PATH/encoder_$START_TIME.log"
 PD_LOG="$LOG_PATH/pd_$START_TIME.log"
 PROXY_LOG="$LOG_PATH/proxy_$START_TIME.log"
+MOONCAKE_MASTER_LOG="$LOG_PATH/mooncake_master_$START_TIME.log"
+MOONCAKE_METADATA_LOG="$LOG_PATH/mooncake_metadata_$START_TIME.log"
+BENCHMARK_LOG="$SCRIPT_DIR/logs/benchmark_$START_TIME.log"
 
 wait_for_server() {
   local port=$1
@@ -77,10 +88,44 @@ cleanup() {
       kill -9 "$PID" 2>/dev/null || true
     fi
   done
+
+  kill -9 $(lsof -t -i :$MOONCAKE_MASTER_PORT)
   echo "Done."
 }
 
 trap cleanup EXIT INT TERM ERR
+
+###############################################################################
+# Initialize Mooncake
+# Read more about Mooncake config at 
+# https://kvcache-ai.github.io/Mooncake/deployment/mooncake-store-deployment-guide.html
+###############################################################################
+mooncake_master \
+  --rpc_port $MOONCAKE_MASTER_PORT \
+  --enable_http_metadata_server=true \
+  --http_metadata_server_host=0.0.0.0 \
+  --http_metadata_server_port=$MOONCAKE_METADATA_PORT \
+  --rpc_thread_num 8 \
+  --default_kv_lease_ttl 0 \
+  --eviction_ratio 0.05 \
+  --eviction_high_watermark_ratio 0.9 \
+  >"$MOONCAKE_MASTER_LOG" 2>&1 &
+PIDS+=($!)
+
+export MC_MS_AUTO_DISC=0
+
+sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
+    -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
+    -e "s/\${MOONCAKE_REPLICA_NUM}/$MOONCAKE_REPLICA_NUM/"\
+    -e "s/\${MOONCAKE_FAST_TRANSFER}/$MOONCAKE_FAST_TRANSFER/"\
+    -e "s/\${MOONCAKE_FAST_TRANSFER_BUFFER_SIZE}/$MOONCAKE_FAST_TRANSFER_BUFFER_SIZE/"\
+    mooncake_config/producer_template.json > producer.json
+sed -e "s/\${MOONCAKE_MASTER_PORT}/$MOONCAKE_MASTER_PORT/"\
+    -e "s/\${MOONCAKE_METADATA_PORT}/$MOONCAKE_METADATA_PORT/"\
+    -e "s/\${MOONCAKE_REPLICA_NUM}/$MOONCAKE_REPLICA_NUM/"\
+    -e "s/\${MOONCAKE_FAST_TRANSFER}/$MOONCAKE_FAST_TRANSFER/"\
+    -e "s/\${MOONCAKE_FAST_TRANSFER_BUFFER_SIZE}/$MOONCAKE_FAST_TRANSFER_BUFFER_SIZE/"\
+    mooncake_config/consumer_template.json > consumer.json
 
 ###############################################################################
 # Encoder worker
@@ -93,13 +138,13 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
   --max-num-seqs 128 \
   --enforce-eager \
   --ec-transfer-config '{
-      "ec_connector": "ECSharedStorageConnector",
-      "ec_role": "ec_producer",
-      "ec_connector_extra_config": {
-          "shared_storage_path": "'"$SHARED_STORAGE_PATH"'",
-          "ec_max_num_scheduled_tokens": "4096"
-      }
-  }' \
+        "ec_connector":"ECMooncakeStorageConnector",
+        "ec_role":"ec_producer",
+        "ec_connector_extra_config": {
+            "ec_mooncake_config_file_path":"'${SCRIPT_DIR}'/producer.json",
+            "ec_max_num_scheduled_tokens": "1000000000000000000"
+        }
+    }' \
   >"$ENC_LOG" 2>&1 &
 
 PIDS+=($!)
@@ -114,12 +159,12 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
   --max-num-seqs 128 \
   --enforce-eager \
   --ec-transfer-config '{
-      "ec_connector": "ECSharedStorageConnector",
-      "ec_role": "ec_consumer",
-      "ec_connector_extra_config": {
-          "shared_storage_path": "'"$SHARED_STORAGE_PATH"'"
-      }
-  }' \
+        "ec_connector":"ECMooncakeStorageConnector",
+        "ec_role":"ec_consumer",
+        "ec_connector_extra_config": {
+            "ec_mooncake_config_file_path":"'${SCRIPT_DIR}'/consumer.json"
+        }
+    }' \
   >"$PD_LOG" 2>&1 &
 
 PIDS+=($!)
@@ -153,9 +198,9 @@ python benchmark_serving.py \
   --dataset-path      /workspace/lmarena-ai/VisionArena-Chat \
   --seed              40 \
   --endpoint          /v1/chat/completions \
-  --num-prompts       $1 \
+  --num-prompts       100 \
   --port              $PROXY_PORT \
   --host              127.0.0.1 \
-  --request-rate      $2
+  --request-rate      100 \
 ###############################################################################
 cleanup
