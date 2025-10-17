@@ -2206,7 +2206,7 @@ class GPUModelRunner(
             positions,
             intermediate_tensors,
             model_kwargs,
-            ec_connector_output,
+            ec_connector_output if self.supports_mm_inputs else None,
         )
 
     def _sample(
