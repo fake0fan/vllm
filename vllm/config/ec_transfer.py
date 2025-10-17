@@ -20,11 +20,11 @@ class ECTransferConfig:
     """Configuration for distributed EC cache transfer."""
 
     ec_connector: str | None = None
-    """The KV connector for vLLM to transmit KV caches between vLLM instances.
+    """The EC connector for vLLM to transmit EC caches between vLLM instances.
     """
 
     engine_id: str | None = None
-    """The engine id for KV transfers."""
+    """The engine id for EC transfers."""
 
     ec_buffer_device: str | None = "cuda"
     """The device used by ec connector to buffer the EC cache.
@@ -35,29 +35,29 @@ class ECTransferConfig:
     bytes. Recommended value: 1e9 (about 1GB)."""
 
     ec_role: ECRole | None = None
-    """Whether this vLLM instance produces, consumes KV cache, or both. Choices
+    """Whether this vLLM instance produces, consumes EC cache, or both. Choices
     are 'ec_producer', 'ec_consumer'."""
 
     ec_rank: int | None = None
-    """The rank of this vLLM instance in the KV cache transfer. Typical value:
+    """The rank of this vLLM instance in the EC cache transfer. Typical value:
     0 for encoder, 1 for pd instance.
     Currently only 1P1D is supported."""
 
     ec_parallel_size: int = 1
-    """The number of parallel instances for KV cache transfer. For
+    """The number of parallel instances for EC cache transfer. For
     PyNcclConnector, this should be 2."""
 
     ec_ip: str = "127.0.0.1"
-    """The KV connector ip, used to build distributed connection."""
+    """The EC connector ip, used to build distributed connection."""
 
     ec_port: int = 14579
-    """The KV connector port, used to build distributed connection."""
+    """The EC connector port, used to build distributed connection."""
 
     ec_connector_extra_config: dict[str, Any] = field(default_factory=dict)
     """any extra config that the connector may need."""
 
     ec_connector_module_path: str | None = None
-    """The Python module path to dynamically load the KV connector from.
+    """The Python module path to dynamically load the EC connector from.
     Only supported in V1."""
 
     def compute_hash(self) -> str:

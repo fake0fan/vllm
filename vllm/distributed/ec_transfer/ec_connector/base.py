@@ -61,7 +61,10 @@ class ECConnectorBase(ABC):
         self._connector_metadata: ECConnectorMetadata | None = None
         self._vllm_config = vllm_config
         self._role = role
-        self._is_producer = vllm_config.ec_transfer_config.is_ec_producer
+        if vllm_config.ec_transfer_config is not None:
+            self._is_producer = vllm_config.ec_transfer_config.is_ec_producer
+        else:
+            raise ValueError("ec_transfer_config must be set for ECConnectorBase")
 
     @property
     def role(self) -> ECConnectorRole:

@@ -51,11 +51,14 @@ class ECSharedStorageConnector(ECConnectorBase):
         # req_id -> index
         self._mm_datas_need_loads: dict[str, int] = {}
         transfer_config = vllm_config.ec_transfer_config
-        self._storage_path = transfer_config.get_from_extra_config(
-            "shared_storage_path", "/tmp"
-        )
-        logger.debug(transfer_config)
-        logger.debug("Shared storage path is %s", self._storage_path)
+        if transfer_config is not None:
+            self._storage_path = transfer_config.get_from_extra_config(
+                "shared_storage_path", "/tmp"
+            )
+            logger.debug(transfer_config)
+            logger.debug("Shared storage path is %s", self._storage_path)
+        else:
+            raise ValueError("ec_transfer_config must be set for ECConnectorBase")
 
     def start_load_caches(self, **kwargs) -> None:
         """Start loading the EC cache from the connector buffer to worker

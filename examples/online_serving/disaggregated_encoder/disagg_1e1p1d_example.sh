@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PIDS=()
+declare -a PIDS=()
 
 ###############################################################################
 # Configuration -- override via env before running
@@ -69,7 +69,7 @@ cleanup() {
     done
     
     # Kill the entire process group as backup
-    # kill -- -$$ 2>/dev/null
+    kill -- -$$ 2>/dev/null
     
     echo "All processes stopped."
     exit 0
@@ -180,7 +180,7 @@ vllm bench serve \
   --backend             openai-chat \
   --endpoint            /v1/chat/completions \
   --dataset-name        hf \
-  --dataset-path        /workspace/lmarena-ai/VisionArena-Chat \
+  --dataset-path        lmarena-ai/VisionArena-Chat \
   --seed                0 \
   --num-prompts         $NUM_PROMPTS \
   --port                $PROXY_PORT

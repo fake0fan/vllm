@@ -42,6 +42,8 @@ class ECConnectorFactory:
         role: ECConnectorRole,
     ) -> ECConnectorBase:
         ec_transfer_config = config.ec_transfer_config
+        if ec_transfer_config is None:
+            raise ValueError("ec_transfer_config must be set to create a connector")
         connector_cls = cls.get_connector_class(ec_transfer_config)
         logger.info(
             "Creating connector with name: %s and engine_id: %s",
@@ -62,7 +64,9 @@ class ECConnectorFactory:
     ) -> type[ECConnectorBase]:
         """Get the connector class by name."""
         connector_name = ec_transfer_config.ec_connector
-        if connector_name in cls._registry:
+        if connector_name is None:
+            raise ValueError("EC connect must not be None")
+        elif connector_name in cls._registry:
             connector_cls = cls._registry[connector_name]()
         else:
             connector_module_path = ec_transfer_config.ec_connector_module_path
