@@ -18,7 +18,29 @@ from vllm.distributed.ec_transfer.ec_connector.shared_storage_connector import (
     ECSharedStorageConnectorMetadata,
     MMMeta,
 )
+from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
+
+
+# ------------------ Mock Classes ------------------ #
+class MockRequest:
+    def __init__(self, request_id, mm_hashes: list[str], token_counts: list[int]):
+        assert len(mm_hashes) == len(token_counts)
+        self.request_id = request_id
+        self._token_counts = token_counts
+        self.mm_features = []
+        for i, mm_hash in enumerate(mm_hashes):
+            feature = MultiModalFeatureSpec(
+                data=None,
+                modality="image",
+                identifier=mm_hash,
+                mm_position=PlaceholderRange(offset=0, length=self._token_counts[i]),
+            )
+            self.mm_features.append(feature)
+
+    def get_num_encoder_tokens(self, input_id: int) -> int:
+        assert input_id < len(self._token_counts)
+        return self._token_counts[input_id]
 
 
 @pytest.fixture
@@ -50,13 +72,15 @@ def mock_vllm_config_consumer(temp_storage):
 @pytest.fixture
 def mock_request_with_3_mm():
     """Fixture providing mock Request with 3 multimodal items."""
-    request = Mock()
-    request.request_id = "test_req_123"
-    request.mm_features = ["img_hash_1", "img_hash_2", "audio_hash_1"]
-    request.get_num_encoder_tokens = Mock(side_effect=lambda idx: [100, 150, 200][idx])
+    request_id = "test_req_123"
+    mm_hashes = ["img_hash_1", "img_hash_2", "img_hash_3"]
+    token_counts = [100, 150, 200]
+
+    request = MockRequest(request_id, mm_hashes, token_counts)
     return request
 
 
+# ------------------ Unit Tests ------------------ #
 class TestECSharedStorageConnectorBasics:
     """Test basic EC connector functionality."""
 
@@ -116,7 +140,9 @@ class TestCacheExistence:
 
         # Create cache files using save_caches (proper way)
         encoder_cache: dict[str, torch.Tensor] = {}
-        for mm_hash in mock_request_with_3_mm.mm_hashes:
+
+        for mm_feature in mock_request_with_3_mm.mm_features:
+            mm_hash = mm_feature.identifier
             encoder_cache[mm_hash] = torch.randn(10, 768)
             producer.save_caches(encoder_cache, mm_hash)
 
@@ -166,8 +192,9 @@ class TestCacheExistence:
         )
 
         # Create only the second cache file
-        encoder_cache = {mock_request_with_3_mm.mm_hashes[1]: torch.randn(10, 768)}
-        connector.save_caches(encoder_cache, mock_request_with_3_mm.mm_hashes[1])
+        mm_hash_second = mock_request_with_3_mm.mm_features[1].identifier
+        encoder_cache = {mm_hash_second: torch.randn(10, 768)}
+        connector.save_caches(encoder_cache, mm_hash_second)
 
         # Test
         result = connector.has_caches(mock_request_with_3_mm)
@@ -202,10 +229,10 @@ class TestStateManagement:
         assert len(connector._mm_datas_need_loads) == 3
         assert "img_hash_1" in connector._mm_datas_need_loads
         assert "img_hash_2" in connector._mm_datas_need_loads
-        assert "audio_hash_1" in connector._mm_datas_need_loads
+        assert "img_hash_3" in connector._mm_datas_need_loads
         assert connector._mm_datas_need_loads["img_hash_1"] == 100
         assert connector._mm_datas_need_loads["img_hash_2"] == 150
-        assert connector._mm_datas_need_loads["audio_hash_1"] == 200
+        assert connector._mm_datas_need_loads["img_hash_3"] == 200
 
     def test_build_connector_meta_3_items(
         self, mock_vllm_config_producer, mock_request_with_3_mm
@@ -231,7 +258,7 @@ class TestStateManagement:
         assert metadata.mm_datas[0].num_token == 100
         assert metadata.mm_datas[1].mm_hash == "img_hash_2"
         assert metadata.mm_datas[1].num_token == 150
-        assert metadata.mm_datas[2].mm_hash == "audio_hash_1"
+        assert metadata.mm_datas[2].mm_hash == "img_hash_3"
         assert metadata.mm_datas[2].num_token == 200
 
         # State should be cleared after building
@@ -289,7 +316,7 @@ class TestCacheSaving:
         )
 
         # Create and save 3 different caches
-        mm_hashes = mock_request_with_3_mm.mm_hashes
+        mm_hashes = [f.identifier for f in mock_request_with_3_mm.mm_features]
         encoder_cache: dict[str, torch.Tensor] = {}
 
         for mm_hash in mm_hashes:
@@ -321,8 +348,7 @@ class TestCacheSaving:
         connector.save_caches(encoder_cache, mm_hash)
 
         # Verify file doesn't exist using has_caches
-        mock_request = Mock()
-        mock_request.mm_features = [mm_hash]
+        mock_request = MockRequest("req_consumer", [mm_hash], [10])
         result = connector.has_caches(mock_request)
         assert not result[0], "Consumer should not save caches"
 
@@ -346,7 +372,7 @@ class TestCacheLoading:
         )
 
         # Producer saves 3 caches
-        mm_hashes = mock_request_with_3_mm.mm_hashes
+        mm_hashes = [f.identifier for f in mock_request_with_3_mm.mm_features]
         saved_caches = {}
         for mm_hash in mm_hashes:
             saved_caches[mm_hash] = torch.randn(10, 768)
@@ -575,8 +601,7 @@ class TestEdgeCases:
             role=ECConnectorRole.SCHEDULER,
         )
 
-        mock_request = Mock()
-        mock_request.mm_features = []
+        mock_request = MockRequest("req_empty", [], [])
 
         result = connector.has_caches(mock_request)
 
