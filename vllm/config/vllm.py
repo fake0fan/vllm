@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import torch
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.dataclasses import dataclass
 
 import vllm.envs as envs
@@ -28,6 +28,7 @@ from vllm.utils import random_uuid
 from .cache import CacheConfig
 from .compilation import CompilationConfig, CompilationMode, CUDAGraphMode
 from .device import DeviceConfig
+from .ec_transfer import ECTransferConfig
 from .kv_events import KVEventsConfig
 from .kv_transfer import KVTransferConfig
 from .load import LoadConfig
@@ -101,6 +102,8 @@ class VllmConfig:
     """The configurations for distributed KV cache transfer."""
     kv_events_config: KVEventsConfig | None = None
     """The configurations for event publishing."""
+    ec_transfer_config: ECTransferConfig | None = None
+    """The configurations for distributed EC cache transfer."""
     # some opaque config, only used to provide additional information
     # for the hash computation, mainly used for testing, debugging or out of
     # tree config registration.
@@ -183,6 +186,10 @@ class VllmConfig:
             vllm_factors.append("None")
         if self.kv_transfer_config:
             vllm_factors.append(self.kv_transfer_config.compute_hash())
+        else:
+            vllm_factors.append("None")
+        if self.ec_transfer_config:
+            vllm_factors.append(self.ec_transfer_config.compute_hash())
         else:
             vllm_factors.append("None")
         if self.additional_config:
@@ -942,6 +949,20 @@ class VllmConfig:
             f"pooler_config={self.model_config.pooler_config!r}, "
             f"compilation_config={self.compilation_config!r}"
         )
+
+    @model_validator(mode="after")
+    def validate_mamba_block_size(self) -> "VllmConfig":
+        if self.model_config is None:
+            return self
+        mamba_block_size_is_set = (
+            self.cache_config.mamba_block_size is not None
+            and self.cache_config.mamba_block_size != self.model_config.max_model_len
+        )
+        if mamba_block_size_is_set and not self.cache_config.enable_prefix_caching:
+            raise ValueError(
+                "--mamba-block-size can only be set with --enable-prefix-caching"
+            )
+        return self
 
 
 _current_vllm_config: VllmConfig | None = None

@@ -30,6 +30,7 @@ from vllm.config import (
     get_layers_from_vllm_config,
     update_config,
 )
+from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
@@ -108,11 +109,13 @@ from vllm.v1.outputs import (
     EMPTY_MODEL_RUNNER_OUTPUT,
     AsyncModelRunnerOutput,
     DraftTokenIds,
+    ECConnectorOutput,
     LogprobsLists,
     LogprobsTensors,
     ModelRunnerOutput,
     PoolerOutput,
     SamplerOutput,
+    make_empty_encoder_model_runner_output,
 )
 from vllm.v1.pool.metadata import PoolingMetadata
 from vllm.v1.sample.logits_processor import LogitsProcessors, build_logitsprocs
@@ -126,6 +129,7 @@ from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.structured_output.utils import apply_grammar_bitmask
 from vllm.v1.utils import CpuGpuBuffer, record_function_or_nullcontext
 from vllm.v1.worker.dp_utils import coordinate_batch_across_dp
+from vllm.v1.worker.ec_connector_model_runner_mixin import ECConnectorModelRunnerMixin
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunnerMixin
@@ -217,7 +221,9 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         return output
 
 
-class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+class GPUModelRunner(
+    LoRAModelRunnerMixin, KVConnectorModelRunnerMixin, ECConnectorModelRunnerMixin
+):
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -706,7 +712,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             req_state = self.requests[req_id]
             num_computed_tokens = req_data.num_computed_tokens[i]
             new_block_ids = req_data.new_block_ids[i]
-            resumed_from_preemption = req_data.resumed_from_preemption[i]
+            resumed_from_preemption = req_id in req_data.resumed_req_ids
             num_output_tokens = req_data.num_output_tokens[i]
 
             # Update the cached states.
@@ -754,16 +760,17 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Replace the existing block IDs with the new ones.
                 req_state.block_ids = new_block_ids
 
-                if self.use_async_scheduling and num_output_tokens > 0:
-                    # We must recover the output token ids for resumed requests in the
-                    # async scheduling case, so that correct input_ids are obtained.
-                    resumed_token_ids = req_data.resumed_req_token_ids[i]
-                    assert resumed_token_ids is not None
-                    req_state.output_token_ids = resumed_token_ids[-num_output_tokens:]
             if req_index is None:
                 # The request is not in the persistent batch.
                 # The request was either preempted and resumed later, or was not
                 # scheduled in the previous step and needs to be added again.
+
+                if self.use_async_scheduling and num_output_tokens > 0:
+                    # We must recover the output token ids for resumed requests in the
+                    # async scheduling case, so that correct input_ids are obtained.
+                    resumed_token_ids = req_data.all_token_ids[req_id]
+                    req_state.output_token_ids = resumed_token_ids[-num_output_tokens:]
+
                 reqs_to_add.append(req_state)
                 continue
 
@@ -1798,6 +1805,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 output,
                 is_embed=pos_info.is_embed,
             )
+            logger.debug("Finish execute for mm hash %s", mm_hash)
+            self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
     def _gather_mm_embeddings(
         self,
@@ -2117,20 +2126,27 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         torch.Tensor,
         IntermediateTensors | None,
         dict[str, Any],
+        ECConnectorOutput | None,
     ]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         is_first_rank = get_pp_group().is_first_rank
 
         # _prepare_inputs may reorder the batch, so we must gather multi
         # modal outputs after that to ensure the correct order
+        ec_connector_output = None
+
         if (
             self.supports_mm_inputs
             and is_first_rank
             and not self.model_config.is_encoder_decoder
         ):
             # Run the multimodal encoder if any.
-            self._execute_mm_encoder(scheduler_output)
-            mm_embeds, is_mm_embed = self._gather_mm_embeddings(scheduler_output)
+            with self.maybe_get_ec_connector_output(
+                scheduler_output,
+                encoder_cache=self.encoder_cache,
+            ) as ec_connector_output:
+                self._execute_mm_encoder(scheduler_output)
+                mm_embeds, is_mm_embed = self._gather_mm_embeddings(scheduler_output)
 
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)
@@ -2211,6 +2227,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             positions,
             intermediate_tensors,
             model_kwargs,
+            ec_connector_output,
         )
 
     def _sample(
@@ -2426,6 +2443,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Update persistent batch states.
                 self._update_states(scheduler_output)
 
+                if has_ec_transfer() and get_ec_transfer().is_producer:
+                    with self.maybe_get_ec_connector_output(
+                        scheduler_output,
+                        encoder_cache=self.encoder_cache,
+                    ) as ec_connector_output:
+                        self._execute_mm_encoder(scheduler_output)
+                        return make_empty_encoder_model_runner_output(scheduler_output)
+
                 if not scheduler_output.total_num_scheduled_tokens:
                     if not has_kv_transfer_group():
                         # Return empty ModelRunnerOutput if no work to do.
@@ -2472,6 +2497,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 positions,
                 intermediate_tensors,
                 model_kwargs,
+                ec_connector_output,
             ) = self._preprocess(
                 scheduler_output, num_input_tokens, intermediate_tensors
             )
@@ -2665,6 +2691,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             prompt_logprobs_dict=prompt_logprobs_dict,
             pooler_output=[],
             kv_connector_output=kv_connector_output,
+            ec_connector_output=ec_connector_output
+            if self.supports_mm_inputs
+            else None,
             num_nans_in_logits=num_nans_in_logits,
         )
 
@@ -4631,7 +4660,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             KVCacheSpec: A dictionary mapping layer names to their KV cache
             format. Layers that do not need KV cache are not included.
         """
-
+        if has_ec_transfer() and get_ec_transfer().is_producer:
+            return {}
         kv_cache_spec: dict[str, KVCacheSpec] = {}
         attn_layers = get_layers_from_vllm_config(self.vllm_config, AttentionLayerBase)
         for layer_name, attn_module in attn_layers.items():
