@@ -56,7 +56,8 @@ class ECSharedStorageConnector(ECConnectorBase):
             self._storage_path = transfer_config.get_from_extra_config(
                 "shared_storage_path", "/tmp"
             )
-            self.device = transfer_config.ec_buffer_device
+            if transfer_config.ec_buffer_device is not None:
+                self.device = transfer_config.ec_buffer_device 
             logger.debug(transfer_config)
             logger.debug("Shared storage path is %s", self._storage_path)
         else:
