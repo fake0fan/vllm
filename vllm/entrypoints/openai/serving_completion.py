@@ -33,7 +33,7 @@ from vllm.logger import init_logger
 from vllm.logprobs import Logprob
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import BeamSearchParams, SamplingParams
-from vllm.tokenizers import TokenizerLike
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.utils.async_utils import merge_async_iterators
 from vllm.utils.collection_utils import as_list
 from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
@@ -326,7 +326,7 @@ class OpenAIServingCompletion(OpenAIServing):
         created_time: int,
         model_name: str,
         num_prompts: int,
-        tokenizer: TokenizerLike | None,
+        tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
     ) -> AsyncGenerator[str, None]:
         num_choices = 1 if request.n is None else request.n
@@ -511,7 +511,7 @@ class OpenAIServingCompletion(OpenAIServing):
         request_id: str,
         created_time: int,
         model_name: str,
-        tokenizer: TokenizerLike | None,
+        tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
     ) -> CompletionResponse:
         choices: list[CompletionResponseChoice] = []
@@ -606,8 +606,11 @@ class OpenAIServingCompletion(OpenAIServing):
             )
 
         request_metadata.final_usage_info = usage
+        kv_transfer_params = None
+        ec_transfer_params = None
         if final_res_batch:
             kv_transfer_params = final_res_batch[0].kv_transfer_params
+            ec_transfer_params = final_res_batch[0].ec_transfer_params
         return CompletionResponse(
             id=request_id,
             created=created_time,
@@ -615,6 +618,7 @@ class OpenAIServingCompletion(OpenAIServing):
             choices=choices,
             usage=usage,
             kv_transfer_params=kv_transfer_params,
+            ec_transfer_params=ec_transfer_params,
         )
 
     def _create_completion_logprobs(
@@ -622,7 +626,7 @@ class OpenAIServingCompletion(OpenAIServing):
         token_ids: GenericSequence[int],
         top_logprobs: GenericSequence[dict[int, Logprob] | None],
         num_output_top_logprobs: int,
-        tokenizer: TokenizerLike | None,
+        tokenizer: AnyTokenizer,
         initial_text_offset: int = 0,
         return_as_token_id: bool | None = None,
     ) -> CompletionLogProbs:
@@ -642,15 +646,9 @@ class OpenAIServingCompletion(OpenAIServing):
         for i, token_id in enumerate(token_ids):
             step_top_logprobs = top_logprobs[i]
             if step_top_logprobs is None:
+                token = tokenizer.decode(token_id)
                 if should_return_as_token_id:
                     token = f"token_id:{token_id}"
-                else:
-                    if tokenizer is None:
-                        raise ValueError(
-                            "Unable to get tokenizer because `skip_tokenizer_init=True`"
-                        )
-
-                    token = tokenizer.decode(token_id)
 
                 out_tokens.append(token)
                 out_token_logprobs.append(None)
