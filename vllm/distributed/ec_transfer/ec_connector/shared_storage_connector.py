@@ -51,10 +51,13 @@ class ECSharedStorageConnector(ECConnectorBase):
         # req_id -> index
         self._mm_datas_need_loads: dict[str, int] = {}
         transfer_config = vllm_config.ec_transfer_config
+        self.device = "cuda"
         if transfer_config is not None:
             self._storage_path = transfer_config.get_from_extra_config(
                 "shared_storage_path", "/tmp"
             )
+            if transfer_config.ec_buffer_device is not None:
+                self.device = transfer_config.ec_buffer_device
             logger.debug(transfer_config)
             logger.debug("Shared storage path is %s", self._storage_path)
         else:
@@ -91,7 +94,7 @@ class ECSharedStorageConnector(ECConnectorBase):
             if mm_data.mm_hash in encoder_cache:
                 continue
             filename = self._generate_filename_debug(mm_data.mm_hash)
-            ec_cache = safetensors.torch.load_file(filename)["ec_cache"].cuda()
+            ec_cache = safetensors.torch.load_file(filename)["ec_cache"].to(self.device)
             encoder_cache[mm_data.mm_hash] = ec_cache
             logger.debug("Success load encoder cache for hash %s", mm_data.mm_hash)
 
