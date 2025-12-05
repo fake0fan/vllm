@@ -14,7 +14,7 @@ ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-0}"
+GPU_E="${GPU_E:-2}"
 GPU_PD="${GPU_PD:-1}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
@@ -86,7 +86,10 @@ mkdir -p $EC_SHARED_STORAGE_PATH
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH/dump \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5569 \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.01 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
@@ -96,11 +99,8 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --max-num-seqs 128 \
     --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_producer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-        }
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_producer"
     }' \
     >"${ENC_LOG}" 2>&1 &
 
@@ -109,7 +109,10 @@ PIDS+=($!)
 ###############################################################################
 # Prefill+Decode worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5579 \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH/dump \
+CUDA_VISIBLE_DEVICES="$GPU_PD" \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
@@ -117,11 +120,8 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --max-num-seqs 128 \
     --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_consumer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-        }
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_consumer"
     }' \
     >"${PD_LOG}" 2>&1 &
 
@@ -159,26 +159,30 @@ vllm bench serve \
   --dataset-path        lmarena-ai/VisionArena-Chat \
   --seed                0 \
   --num-prompts         $NUM_PROMPTS \
+  --save-result \
+  --save-detailed \
+  --result-dir $LOG_PATH \
+  --result-filename ePD_nixl_$(date +"%Y%m%d_%H%M%S").json \
   --port                $PROXY_PORT
 
 PIDS+=($!)
 
-###############################################################################
-# Single request with local image
-###############################################################################
-echo "Running single request with local image (non-stream)..."
-curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-    "model": "'${MODEL}'",
-    "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
-        {"type": "text", "text": "What is in this image?"}
-    ]}
-    ]
-    }'
+# ###############################################################################
+# # Single request with local image
+# ###############################################################################
+# echo "Running single request with local image (non-stream)..."
+# curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{
+#     "model": "'${MODEL}'",
+#     "messages": [
+#     {"role": "system", "content": "You are a helpful assistant."},
+#     {"role": "user", "content": [
+#         {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+#         {"type": "text", "text": "What is in this image?"}
+#     ]}
+#     ]
+#     }'
 
 
 # cleanup
