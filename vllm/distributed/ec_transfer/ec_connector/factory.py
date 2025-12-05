@@ -5,11 +5,14 @@ import importlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+# yapf: disable
 from vllm.distributed.ec_transfer.ec_connector.base import (
     ECConnectorBase,
     ECConnectorRole,
 )
 from vllm.logger import init_logger
+
+# yapf: enable
 
 if TYPE_CHECKING:
     from vllm.config import ECTransferConfig, VllmConfig
@@ -83,3 +86,10 @@ ECConnectorFactory.register_connector(
     "vllm.distributed.ec_transfer.ec_connector.shared_storage_connector",
     "ECSharedStorageConnector",
 )
+
+ECConnectorFactory.register_connector(
+    "NixlECConnector",
+    "vllm.distributed.ec_transfer.ec_connector.nixl_connector",
+    "NixlECConnector",
+)
+

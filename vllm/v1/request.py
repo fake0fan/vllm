@@ -64,6 +64,15 @@ class Request:
 
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: dict[str, Any] | None = None
+        # E/P: Connector-specific EC transfer parameters.
+        # Format: dict[mm_hash, dict] where each dict contains:
+        #   - do_remote_encode: bool
+        #   - remote_engine_id: str
+        #   - remote_host: str
+        #   - remote_port: int
+        #   - remote_mm_segments: dict[mm_hash, list[tuple[int, int]]]
+        #   - tp_size: int
+        self.ec_transfer_params: dict[str, Any] | None = None
 
         if pooling_params is not None:
             # Pooling models.
@@ -79,6 +88,9 @@ class Request:
                 self.kv_transfer_params = sampling_params.extra_args.get(
                     "kv_transfer_params"
                 )
+                self.ec_transfer_params = sampling_params.extra_args.get(
+                    "ec_transfer_params"
+                )
         else:
             raise ValueError("sampling_params and pooling_params can't both be unset")
 
@@ -93,12 +105,7 @@ class Request:
             if self.prompt_token_ids is not None
             else [0] * self.num_prompt_tokens
         )
-
-        # Used in async scheduling.
-        self.num_output_placeholders = 0
-        # Used in forced preemption (reset_prefix_cache) with async scheduling.
-        self.discard_latest_async_tokens = False
-
+        self.num_output_placeholders = 0  # Used in async scheduling.
         self.spec_token_ids: list[int] = []
         self.num_computed_tokens = 0
         self.cache_salt: str | None = cache_salt
@@ -226,19 +233,6 @@ class Request:
             return None
         events, self.events = self.events, []
         return events
-
-    def __lt__(self, other: "Request") -> bool:
-        """
-        Compare two requests based on priority, arrival time, and request ID.
-        Used in priority scheduling.
-        """
-        if self.priority != other.priority:
-            return self.priority < other.priority
-        if self.arrival_time != other.arrival_time:
-            return self.arrival_time < other.arrival_time
-        if self.request_id != other.request_id:
-            return self.request_id < other.request_id
-        return id(self) < id(other)
 
 
 class RequestStatus(enum.IntEnum):
