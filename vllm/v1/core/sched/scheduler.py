@@ -992,6 +992,7 @@ class Scheduler(SchedulerInterface):
         pooler_outputs = model_runner_output.pooler_output
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
+        ec_connector_output = model_runner_output.ec_connector_output
 
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: SpecDecodingStats | None = None
@@ -1011,6 +1012,11 @@ class Scheduler(SchedulerInterface):
             failed_kv_load_req_ids = self._handle_invalid_blocks(
                 kv_connector_output.invalid_block_ids
             )
+
+        logger.debug(f"hero: self.ec_connector: {self.ec_connector} / ec_connector_output: {ec_connector_output}")
+        if self.ec_connector.is_producer and ec_connector_output:
+            logger.debug(f"hero: update_mm_hash_addrs_from_output!")
+            self.ec_connector.update_mm_hash_addrs_from_output(ec_connector_output)
 
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
@@ -1077,11 +1083,13 @@ class Scheduler(SchedulerInterface):
                 stopped = check_stop(request, self.max_model_len, pooler_output)
 
             if stopped:
-                kv_transfer_params = self._free_request(request)
+                kv_transfer_params, ec_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
+            else:
+                ec_transfer_params = None
 
             # Extract sample logprobs if needed.
             if (
@@ -1102,7 +1110,7 @@ class Scheduler(SchedulerInterface):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
-            if new_token_ids or pooler_output is not None or kv_transfer_params:
+            if new_token_ids or pooler_output is not None or kv_transfer_params or ec_transfer_params:
                 # Add EngineCoreOutput for this Request.
                 outputs[request.client_index].append(
                     EngineCoreOutput(
@@ -1115,6 +1123,7 @@ class Scheduler(SchedulerInterface):
                         stop_reason=request.stop_reason,
                         events=request.take_events(),
                         kv_transfer_params=kv_transfer_params,
+                        ec_transfer_params=ec_transfer_params,
                         trace_headers=request.trace_headers,
                         num_cached_tokens=request.num_cached_tokens,
                         num_nans_in_logits=request.num_nans_in_logits,
@@ -1305,10 +1314,14 @@ class Scheduler(SchedulerInterface):
             request.status = finished_status
             self._free_request(request)
 
-    def _free_request(self, request: Request) -> dict[str, Any] | None:
+    def _free_request(self, request: Request) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         assert request.is_finished()
 
         delay_free_blocks, kv_xfer_params = self._connector_finished(request)
+
+        # Handle EC connector request_finished
+        _, ec_xfer_params = self._ec_connector_finished(request)
+
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
         self.finished_req_ids.add(request_id)
@@ -1318,7 +1331,7 @@ class Scheduler(SchedulerInterface):
         if not delay_free_blocks:
             self._free_blocks(request)
 
-        return kv_xfer_params
+        return kv_xfer_params, ec_xfer_params
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
@@ -1422,6 +1435,20 @@ class Scheduler(SchedulerInterface):
             return self.connector.request_finished(request, block_ids[0])
 
         return self.connector.request_finished_all_groups(request, block_ids)
+
+    def _ec_connector_finished(
+        self, request: Request
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """
+        Invoke the KV connector request_finished() method if applicable.
+
+        Returns optional kv transfer parameters to be included with the
+        request outputs.
+        """
+        if self.ec_connector is None:
+            return False, None
+
+        return self.ec_connector.request_finished(request)
 
     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
         """

@@ -143,6 +143,7 @@ class ECConnectorOutput:
     # [mm_hash]
     finished_sending: set[str] | None = None
     finished_recving: set[str] | None = None
+    mm_hash_addrs: dict[str, dict[str, int]] | None = None
 
 
 # ModelRunnerOutput is serialized and sent to the scheduler process.

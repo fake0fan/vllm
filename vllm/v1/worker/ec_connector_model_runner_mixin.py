@@ -83,5 +83,11 @@ class ECConnectorModelRunnerMixin:
             output.finished_sending, output.finished_recving = (
                 ec_connector.get_finished(scheduler_output.finished_req_ids)
             )
+            logger.debug(f"hero: finally@!")
+            logger.debug(f"hero: output.finished_sending, output.finished_recving: {output.finished_sending, output.finished_recving}")
+            if ec_connector.is_producer:
+                logger.debug(f"hero: get_mm_hash_addrs:")
+                output.mm_hash_addrs = ec_connector.get_mm_hash_addrs()
+                logger.debug(f"hero: output.mm_hash_addrs: {output.mm_hash_addrs}")
 
             ec_connector.clear_connector_metadata()

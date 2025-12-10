@@ -33,7 +33,7 @@ GPU_E="${GPU_E:-0}"
 GPU_P="${GPU_P:-1}"
 GPU_D="${GPU_D:-2}"
 GPU_SINGLE="${GPU_SINGLE:-$GPU_P}"
-GPU_PD="${GPU_PD:-$GPU_P}"
+GPU_PD="${GPU_PD:-$GPU_D}"
 
 # Port
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -138,7 +138,7 @@ run_epd_1e_1pd() {
     
     # Start encoder instance
     echo "Starting encoder instance on GPU $GPU_E, port $ENCODE_PORT"
-    CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+    CUDA_VISIBLE_DEVICES="$GPU_E" VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5569 vllm serve "$MODEL" \
         --port $ENCODE_PORT \
         --enforce-eager \
         --gpu-memory-utilization 0.01 \
@@ -148,18 +148,15 @@ run_epd_1e_1pd() {
         --max-num-seqs 128 \
         --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
         --ec-transfer-config '{
-            "ec_connector": "ECSharedStorageConnector",
-            "ec_role": "ec_producer",
-            "ec_connector_extra_config": {
-                "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-            }
+            "ec_connector": "NixlECConnector",
+            "ec_role": "ec_producer"
         }' \
         > $LOG_PATH/1e1pd_encoder.log 2>&1 &
     PIDS+=($!)
     
     # Start prefill+decode instance
     echo "Starting PD instance on GPU $GPU_PD, port $PREFILL_DECODE_PORT"
-    CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
+    CUDA_VISIBLE_DEVICES="$GPU_PD" VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5579 vllm serve "$MODEL" \
         --port $PREFILL_DECODE_PORT \
         --enforce-eager \
         --gpu-memory-utilization 0.7 \
@@ -167,11 +164,8 @@ run_epd_1e_1pd() {
         --max-num-seqs 128 \
         --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
         --ec-transfer-config '{
-            "ec_connector": "ECSharedStorageConnector",
-            "ec_role": "ec_consumer",
-            "ec_connector_extra_config": {
-                "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-            }
+            "ec_connector": "NixlECConnector",
+            "ec_role": "ec_consumer"
         }' \
         > $LOG_PATH/1e1pd_pd.log 2>&1 &
     PIDS+=($!)
@@ -338,7 +332,7 @@ run_epd_1e_1p_1d() {
     
     # Start encoder instance
     echo "Starting encoder instance on GPU $GPU_E, port $ENCODE_PORT"
-    CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+    CUDA_VISIBLE_DEVICES="$GPU_E" VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5589 vllm serve "$MODEL" \
         --port $ENCODE_PORT \
         --enforce-eager \
         --gpu-memory-utilization 0.01 \
@@ -348,11 +342,8 @@ run_epd_1e_1p_1d() {
         --max-num-seqs 128 \
         --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
         --ec-transfer-config '{
-            "ec_connector": "ECSharedStorageConnector",
-            "ec_role": "ec_producer",
-            "ec_connector_extra_config": {
-                "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-            }
+            "ec_connector": "NixlECConnector",
+            "ec_role": "ec_producer"
         }' \
         > $LOG_PATH/1e1p1d_encoder.log 2>&1 &
     PIDS+=($!)
@@ -360,6 +351,7 @@ run_epd_1e_1p_1d() {
     # Start prefill instance
     echo "Starting prefill instance on GPU $GPU_P, port $PREFILL_PORT"
     CUDA_VISIBLE_DEVICES="$GPU_P" \
+    VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5599 \
     VLLM_NIXL_SIDE_CHANNEL_PORT=5559 \
     vllm serve "$MODEL" \
         --port $PREFILL_PORT \
@@ -369,11 +361,8 @@ run_epd_1e_1p_1d() {
         --max-num-seqs 128 \
         --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
         --ec-transfer-config '{
-            "ec_connector": "ECSharedStorageConnector",
-            "ec_role": "ec_consumer",
-            "ec_connector_extra_config": {
-                "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-            }
+            "ec_connector": "NixlECConnector",
+            "ec_role": "ec_consumer"
         }' \
         --kv-transfer-config '{
             "kv_connector": "NixlConnector",

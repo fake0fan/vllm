@@ -64,6 +64,15 @@ class Request:
 
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: dict[str, Any] | None = None
+        # E/P: Connector-specific EC transfer parameters.
+        # Format: dict[mm_hash, dict] where each dict contains:
+        #   - do_remote_encode: bool
+        #   - remote_engine_id: str
+        #   - remote_host: str
+        #   - remote_port: int
+        #   - remote_mm_segments: dict[mm_hash, list[tuple[int, int]]]
+        #   - tp_size: int
+        self.ec_transfer_params: dict[str, Any] | None = None
 
         if pooling_params is not None:
             # Pooling models.
@@ -78,6 +87,9 @@ class Request:
             if sampling_params.extra_args is not None:
                 self.kv_transfer_params = sampling_params.extra_args.get(
                     "kv_transfer_params"
+                )
+                self.ec_transfer_params = sampling_params.extra_args.get(
+                    "ec_transfer_params"
                 )
         else:
             raise ValueError("sampling_params and pooling_params can't both be unset")

@@ -92,7 +92,10 @@ mkdir -p $EC_SHARED_STORAGE_PATH
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5569 \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.01 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
@@ -102,11 +105,8 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --max-num-seqs 128 \
     --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_producer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-        }
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_producer"
     }' \
     >"${ENC_LOG}" 2>&1 &
 
@@ -116,8 +116,10 @@ PIDS+=($!)
 # Prefill worker
 ###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_P" \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5559 \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5579 \
 vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
     --port "$PREFILL_PORT" \
@@ -126,11 +128,8 @@ vllm serve "$MODEL" \
     --max-num-seqs 128 \
     --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
-        "ec_connector": "ECSharedStorageConnector",
-        "ec_role": "ec_consumer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
-        }
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_consumer"
     }' \
     --kv-transfer-config '{
         "kv_connector": "NixlConnector",
@@ -144,6 +143,7 @@ PIDS+=($!)
 # Decode worker
 ###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_D" \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=6000 \
 vllm serve "$MODEL" \

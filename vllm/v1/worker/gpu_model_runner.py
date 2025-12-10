@@ -258,6 +258,25 @@ class ExecuteModelState(NamedTuple):
     aux_hidden_states: list[torch.Tensor] | None
     ec_connector_output: ECConnectorOutput | None
 
+class CustomTensorPool:  
+    def __init__(self, max_num_tokens, hidden_size, dtype, device):  
+        self.pool = torch.empty((114688, hidden_size), dtype=dtype, device=device)  
+        # self.total_size = max_num_tokens
+        self.total_size = 114688
+        self.offset = 0  
+        self.allocated_blocks = {}  # Track allocations by mm_hash  
+          
+    def allocate(self, size, mm_hash=None):  
+        if self.offset + size > self.total_size:  
+            # raise RuntimeError("Pool exhausted")
+            logger.debug(f"hero: Pool exhausted; reset offset to 0")
+            self.offset = 0
+        tensor = self.pool[self.offset:self.offset + size]  
+        if mm_hash:  
+            self.allocated_blocks[mm_hash] = (self.offset, size)  
+        self.offset += size  
+        return tensor  
+
 
 class GPUModelRunner(
     LoRAModelRunnerMixin, KVConnectorModelRunnerMixin, ECConnectorModelRunnerMixin
@@ -365,6 +384,69 @@ class GPUModelRunner(
 
         # mm_hash ->  encoder_output
         self.encoder_cache: dict[str, torch.Tensor] = {}
+
+        ## nixl cache!
+        # ==================================================================
+        self.ec_main_cache: torch.Tensor | None = None
+        if has_ec_transfer() and get_ec_transfer().is_producer:
+            # For encoder, self.max_num_tokens => max number of encoder input
+            if self.max_num_tokens > 0:
+                self.ec_main_cache = CustomTensorPool(
+                    max_num_tokens=self.max_num_tokens, 
+                    hidden_size=self.hidden_size,
+                    dtype=self.dtype,
+                    device=self.device,
+                )
+                logger.info(
+                    "Registering EC main cache tensor for Nixl EC producer: "
+                    "max_num_tokens=%s, shape=%s, dtype=%s",
+                    self.max_num_tokens,
+                    self.ec_main_cache.pool.shape,
+                    self.ec_main_cache.pool.dtype,
+                )
+                get_ec_transfer().register_encoder_cache(self.ec_main_cache.pool)
+            else:
+                logger.warning(
+                    "EC transfer producer enabled but max_encoder_len == 0; "
+                    "skipping EC main cache registration."
+                )
+
+        # ==================================================================
+        # Nixl ECConnector: register main encoder cache pool on producers.
+        # This provides a stable base address and per-token stride that the
+        # Nixl ECConnector uses for metadata in its handshake.
+        # # ==================================================================
+        # self.ec_main_cache: torch.Tensor | None = None
+        # if has_ec_transfer() and get_ec_transfer().is_producer:
+        #     # For encoder, self.max_num_tokens => max number of encoder input
+        #     if self.max_num_tokens > 0:
+        #         self.ec_main_cache = torch.empty(
+        #             (self.max_num_tokens, self.hidden_size),
+        #             device=self.device,
+        #             dtype=self.dtype,
+        #         )
+        #         logger.info(
+        #             "Registering EC main cache tensor for Nixl EC producer: "
+        #             "shape=%s, dtype=%s",
+        #             self.ec_main_cache.shape,
+        #             self.ec_main_cache.dtype,
+        #         )
+        #         get_ec_transfer().register_encoder_cache(self.ec_main_cache)
+
+        #         # # hero; why not just use self.encoder_cache
+        #         # logger.info(
+        #         #     "Registering self.encoder_cache tensor for Nixl EC producer: "
+        #         #     "shape=%s, dtype=%s",
+        #         #     self.encoder_cache.shape,
+        #         #     self.encoder_cache.dtype,
+        #         # )
+        #         # get_ec_transfer().register_encoder_cache(self.self.encoder_cache)
+        #     else:
+        #         logger.warning(
+        #             "EC transfer producer enabled but max_encoder_len == 0; "
+        #             "skipping EC main cache registration."
+        #         )
+
 
         self.use_aux_hidden_state_outputs = False
         # Set up speculative decoding.
@@ -2105,11 +2187,30 @@ class GPUModelRunner(
 
         # Cache the encoder outputs by mm_hash
         for (mm_hash, pos_info), output in zip(mm_hashes_pos, encoder_outputs):
+            # Calculate size needed (in elements, not bytes)  
+            tensor_size = pos_info.length
+            logger.debug(f"hero: tensor_size: {tensor_size}")
+            
+            # Allocate from pool - this creates a view, no copy!  
+            pooled_tensor = self.ec_main_cache.allocate(  
+                tensor_size,   
+                mm_hash=mm_hash  
+            ).view(output.shape)  
+
+            # Copy encoder output to pooled location  
+            pooled_tensor.copy_(output)
+
+            # self.encoder_cache[mm_hash] = scatter_mm_placeholders(
+            #     output,
+            #     is_embed=pos_info.is_embed,
+            # )
+            
             self.encoder_cache[mm_hash] = scatter_mm_placeholders(
-                output,
+                pooled_tensor,
                 is_embed=pos_info.is_embed,
             )
             logger.debug("Finish execute for mm hash %s", mm_hash)
+            logger.debug(f"hero: size: {self.encoder_cache[mm_hash].size()} / self.encoder_cache[mm_hash] for {mm_hash}: {self.encoder_cache[mm_hash]}")
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         return encoder_outputs
@@ -2141,6 +2242,9 @@ class GPUModelRunner(
                 start_pos = pos_info.offset
                 num_encoder_tokens = pos_info.length
 
+                # hero:
+                logger.debug(f"hero: start_pos: {start_pos}; num_computed_tokens: {num_computed_tokens}; num_scheduled_tokens: {num_scheduled_tokens}; num_encoder_tokens: {num_encoder_tokens}")
+
                 # The encoder output is needed if the two ranges overlap:
                 # [num_computed_tokens,
                 #  num_computed_tokens + num_scheduled_tokens) and
@@ -2152,6 +2256,10 @@ class GPUModelRunner(
                     # The encoder output is already processed and stored
                     # in the decoder's KV cache.
                     continue
+
+                # logger.debug(f"hero: sleep 3s to try wait for the nixl thing?")
+                # time.sleep(3)
+                # logger.debug(f"hero: finish sleeping 3s")
 
                 start_idx = max(num_computed_tokens - start_pos, 0)
                 end_idx = min(
@@ -2813,7 +2921,11 @@ class GPUModelRunner(
                         encoder_cache=self.encoder_cache,
                     ) as ec_connector_output:
                         self._execute_mm_encoder(scheduler_output)
-                        return make_empty_encoder_model_runner_output(scheduler_output)
+                    # return make_empty_encoder_model_runner_output(scheduler_output)
+                    encoder_model_runner_output = make_empty_encoder_model_runner_output(scheduler_output)
+                    encoder_model_runner_output.ec_connector_output = ec_connector_output
+                    logger.debug(f"hero: modified encoder_model_runner_output: {encoder_model_runner_output}")
+                    return encoder_model_runner_output
 
                 if not num_scheduled_tokens:
                     if (
@@ -2921,6 +3033,8 @@ class GPUModelRunner(
             ) = self._preprocess(
                 scheduler_output, num_tokens_padded, intermediate_tensors
             )
+
+            logger.debug(f"hero: ec_connector_output from _preprocess: {ec_connector_output}")
 
         # Set cudagraph mode to none if calc_kv_scales is true.
         # KV scales calculation involves dynamic operations that are incompatible

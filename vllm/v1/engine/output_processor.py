@@ -204,6 +204,7 @@ class RequestState:
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
         kv_transfer_params: dict[str, Any] | None = None,
+        ec_transfer_params: dict[str, Any] | None = None,
     ) -> RequestOutput | PoolingRequestOutput | None:
         finished = finish_reason is not None
         final_only = self.output_kind == RequestOutputKind.FINAL_ONLY
@@ -253,7 +254,7 @@ class RequestState:
                 return None
 
         return self._new_request_output(
-            request_id, outputs, finished, kv_transfer_params
+            request_id, outputs, finished, kv_transfer_params, ec_transfer_params
         )
 
     def _new_request_output(
@@ -262,6 +263,7 @@ class RequestState:
         outputs: list[CompletionOutput] | list[PoolingOutput],
         finished: bool,
         kv_transfer_params: dict[str, Any] | None = None,
+        ec_transfer_params: dict[str, Any] | None = None,
     ) -> RequestOutput | PoolingRequestOutput:
         first_output = outputs[0]
         if isinstance(first_output, PoolingOutput):
@@ -295,6 +297,7 @@ class RequestState:
             outputs=cast(list[CompletionOutput], outputs),
             finished=finished,
             kv_transfer_params=kv_transfer_params,
+            ec_transfer_params=ec_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
             metrics=self.stats,
         )
@@ -482,6 +485,7 @@ class OutputProcessor:
             finish_reason = engine_core_output.finish_reason
             stop_reason = engine_core_output.stop_reason
             kv_transfer_params = engine_core_output.kv_transfer_params
+            ec_transfer_params = engine_core_output.ec_transfer_params
             req_state.num_cached_tokens = engine_core_output.num_cached_tokens
             req_state.is_prefilling = False
 
@@ -507,6 +511,7 @@ class OutputProcessor:
                 finish_reason,
                 stop_reason,
                 kv_transfer_params,
+                ec_transfer_params,
             ):
                 if req_state.queue is not None:
                     # AsyncLLM: put into queue for handling by generate().

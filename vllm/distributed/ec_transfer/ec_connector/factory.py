@@ -86,3 +86,10 @@ ECConnectorFactory.register_connector(
     "vllm.distributed.ec_transfer.ec_connector.shared_storage_connector",
     "ECSharedStorageConnector",
 )
+
+ECConnectorFactory.register_connector(
+    "NixlECConnector",
+    "vllm.distributed.ec_transfer.ec_connector.nixl_connector",
+    "NixlECConnector",
+)
+

@@ -171,6 +171,7 @@ if TYPE_CHECKING:
     VLLM_ALLOW_INSECURE_SERIALIZATION: bool = False
     VLLM_NIXL_SIDE_CHANNEL_HOST: str = "localhost"
     VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5600
+    VLLM_NIXL_EC_SIDE_CHANNEL_PORT: int = 5700
     VLLM_ALL2ALL_BACKEND: Literal[
         "naive",
         "pplx",
@@ -1233,6 +1234,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Port used for NIXL handshake between remote agents.
     "VLLM_NIXL_SIDE_CHANNEL_PORT": lambda: int(
         os.getenv("VLLM_NIXL_SIDE_CHANNEL_PORT", "5600")
+    ),
+    "VLLM_NIXL_EC_SIDE_CHANNEL_PORT": lambda: int(
+        os.getenv("VLLM_NIXL_EC_SIDE_CHANNEL_PORT", "5700")
     ),
     # all2all backend for vllm's expert parallel communication
     # Available options:
