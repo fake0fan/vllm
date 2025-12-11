@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import atexit
-from collections import OrderedDict
 import ctypes
 import math
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import torch
@@ -81,7 +81,7 @@ class TensorMemoryPool:
         self.min_block_size = self._round_to_power_of_two(min_block_size)
 
         self.free_lists: dict[int, dict[int, MemoryBlock]] = {}
-        self.allocated_blocks: OrderedDict[int, MemoryBlock] = {}
+        self.allocated_blocks: OrderedDict[int, MemoryBlock] = OrderedDict()
 
         self._initialize_free_lists()
         self._allocate_pinned_memory()
@@ -150,7 +150,7 @@ class TensorMemoryPool:
                 else:
                     raise InsufficientMemoryError(
                         f"Can not allocate required size {required_size}"
-                    )
+                    ) from None
 
     def _split_block(self, block: MemoryBlock, required_size: int):
         while block.size > required_size and block.size // 2 >= self.min_block_size:

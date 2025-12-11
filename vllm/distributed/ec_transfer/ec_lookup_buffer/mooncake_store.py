@@ -22,7 +22,6 @@ import torch
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.utils.tensor_memory_pool import (
-    InsufficientMemoryError,
     TensorMemoryPool,
 )
 from vllm.logger import init_logger
@@ -85,22 +84,6 @@ class MooncakeStoreConfig:
         )
 
 
-@dataclass
-class ECMooncakeTensorPoolMetadata:
-    """
-    Metadata element for a buffer in the tensor pool. This stores:
-
-        key: ECMooncakeStore key of (key, value) pair
-        addr: addr of the buffer in the tensor pool
-
-    Those elements are maintained for zero-copy put method (fast_transfer mode),
-    and evicted by FIFO eviction policy.
-    """
-
-    key: str
-    addr: int
-
-
 class ECMooncakeStore:
     """
     Currently, it only supports zero-copy get/put with
@@ -124,7 +107,8 @@ class ECMooncakeStore:
 
             self.store = MooncakeDistributedStore()
             self.config = MooncakeStoreConfig.from_config(
-                vllm_config.ec_transfer_config.ec_connector_extra_config)
+                vllm_config.ec_transfer_config.ec_connector_extra_config
+            )
             logger.debug("Mooncake Configuration loaded successfully.")
 
             # Check if storage_root_dir exists and set environment variable
@@ -226,9 +210,7 @@ class ECMooncakeStore:
     def batch_remove(self, keys: list[str]) -> int:
         if not keys:
             return 0
-        pattern = re.compile(
-            r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b"
-        )
+        pattern = re.compile(r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b")
         return self.store.remove_by_regex(pattern)
 
     def metadata_key(self, key: str) -> str:
@@ -247,7 +229,9 @@ class ECMooncakeStore:
 
         return self._batch_get(keys, device)
 
-    def _zero_copy_batch_get(self, keys: list[str], device) -> list[torch.Tensor | None]:
+    def _zero_copy_batch_get(
+        self, keys: list[str], device
+    ) -> list[torch.Tensor | None]:
         if not keys:
             return []
 
@@ -283,8 +267,9 @@ class ECMooncakeStore:
             buffer_shapes.append(buffer_shape)
 
         with self.pool_lock:
-            buffer_addrs = [self.tensor_pool.allocate(buffer_size)
-                            for buffer_size in sizes]
+            buffer_addrs = [
+                self.tensor_pool.allocate(buffer_size) for buffer_size in sizes
+            ]
 
         # Fill None first and
         # replace valid keys with corresponding buffers
@@ -329,7 +314,10 @@ class ECMooncakeStore:
             )
             tensor_loaded = torch.from_numpy(arr_loaded)
 
-            if meta["original_dtype"].split(".")[-1] != meta["serialized_dtype"].split(".")[-1]:
+            if (
+                meta["original_dtype"].split(".")[-1]
+                != meta["serialized_dtype"].split(".")[-1]
+            ):
                 tensor_loaded = tensor_loaded.view(
                     getattr(torch, meta["original_dtype"].split(".")[-1])
                 )
@@ -410,7 +398,7 @@ class ECMooncakeStore:
                     self.store.put_batch,
                     meta_keys,
                     meta_values,
-                    self.replica_config
+                    self.replica_config,
                 ),
                 timeout=self.config.transfer_timeout,
             )
@@ -468,7 +456,7 @@ class ECMooncakeStore:
                     self.store.put_batch,
                     keys,
                     bytes_list,
-                    self.replica_config
+                    self.replica_config,
                 ),
                 timeout=self.config.transfer_timeout,
             )

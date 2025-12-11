@@ -78,10 +78,8 @@ cleanup() {
         fi
     done
 
-    if kill -0 "$MOONCAKE_MASTER_PID" 2>/dev/null; then
-        echo "Force killing process $MOONCAKE_MASTER_PID"
-        kill -9 "$MOONCAKE_MASTER_PID" 2>/dev/null
-    fi
+    echo "Force killing mooncake processes"
+    pkill -f "mooncake_master"
     
     echo "All processes stopped."
     exit 0
