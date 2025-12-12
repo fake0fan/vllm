@@ -162,10 +162,8 @@ class ECConnectorBase(ABC):
     def wait_for_save(self):
         """
         Block until all the save operations is done. This is called
-        as the forward context exits to ensure that the async saving
-        from save_kv_layer is complete before finishing the forward.
-
-        This prevents overwrites of paged KV buffer before saving done.
+        to ensure that the async is complete before notifying the proxy
+        that processing image is finished.
         """
         return
 

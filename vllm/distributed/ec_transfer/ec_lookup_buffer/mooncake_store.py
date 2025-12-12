@@ -10,6 +10,7 @@ from this remote lookup buffer.
 import asyncio
 import json
 import math
+import multiprocessing
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,7 @@ from vllm.distributed.ec_transfer.utils.tensor_memory_pool import (
 )
 from vllm.logger import init_logger
 
+METADATA_SUFFIX = "_metadata"
 DEFAULT_GLOBAL_SEGMENT_SIZE = 3355443200  # 3.125 GiB
 DEFAULT_LOCAL_BUFFER_SIZE = 1073741824  # 1.0 GiB
 DEFAULT_TENSOR_POOL_SIZE = 1073741824  # 1.0 GiB
@@ -88,7 +90,6 @@ class ECMooncakeStore:
     """
     Currently, it only supports zero-copy get/put with
     following data path gpu->cpu->cpu->gpu
-    TODO: remove by keys, non-blocking
     """
 
     def __init__(self, vllm_config: "VllmConfig"):
@@ -181,15 +182,15 @@ class ECMooncakeStore:
         )
         self.put_thread.start()
 
-        self.io_executor = ThreadPoolExecutor(max_workers=10)
-        self.meta_suffix = "_metadata"
+        max_workers = max(1, min(multiprocessing.cpu_count() // 2, 8))
+        self.io_executor = ThreadPoolExecutor(max_workers=max_workers)
 
     def close(self):
         self.wait_for_put()
 
         if self.put_loop.is_running():
             self.put_loop.call_soon_threadsafe(self.put_loop.stop)
-            self.put_thread.join(timeout=5.0)  # Add timeout
+            self.put_thread.join()
 
         self.put_loop.close()
 
@@ -215,7 +216,7 @@ class ECMooncakeStore:
 
     def metadata_key(self, key: str) -> str:
         # TODO: no guarantee that there is no (k,v) with this key
-        return key + self.meta_suffix
+        return key + METADATA_SUFFIX
 
     def get(self, key: str) -> torch.Tensor | None:
         logger.error("Single get operation is not supported. Use batch_get instead.")
@@ -281,6 +282,7 @@ class ECMooncakeStore:
             with self.pool_lock:
                 self.tensor_pool.batch_free(buffer_addrs)
             logger.error("batch_get_into failed: %s", str(e))
+            return results
 
         for id, addr, dtype, shape, read_byte in zip(
             exist_ids, buffer_addrs, buffer_dtypes, buffer_shapes, read_bytes
@@ -392,7 +394,7 @@ class ECMooncakeStore:
             meta_values.append(meta_bytes)
 
         try:
-            await asyncio.wait_for(
+            meta_task = asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     self.io_executor,
                     self.store.put_batch,
@@ -404,7 +406,7 @@ class ECMooncakeStore:
             )
 
             # Zero-copy put
-            await asyncio.wait_for(
+            data_task = asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     self.io_executor,
                     self.store.batch_put_from,
@@ -415,6 +417,8 @@ class ECMooncakeStore:
                 ),
                 timeout=self.config.transfer_timeout,
             )
+
+            await asyncio.gather(meta_task, data_task)
         except Exception as e:
             with self.pool_lock:
                 self.tensor_pool.batch_free(buffer_addrs)
