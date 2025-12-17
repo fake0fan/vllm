@@ -60,6 +60,21 @@ class ECSharedStorageConnector(ECConnectorBase):
         else:
             raise ValueError("ec_transfer_config must be set for ECConnectorBase")
 
+    def register_encoder_cache(
+        self,
+        ec_main_cache,
+    ):
+        """
+        Initialize with the EC caches.
+        Args:
+            ec_main_cache
+        """
+        # TODO: Implement this later for P2P feature
+        return
+        
+    def get_mm_hash_addrs(self):
+        return     
+
     def start_load_caches(self, encoder_cache, **kwargs) -> None:
         """
         Start loading the cache from the connector into vLLM's encoder cache.

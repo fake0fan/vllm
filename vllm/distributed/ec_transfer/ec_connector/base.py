@@ -113,15 +113,16 @@ class ECConnectorBase(ABC):
 
     def register_caches(
         self,
-        ec_caches: dict[str, torch.Tensor],
+        ec_main_cache,
     ):
         """
         Initialize with the EC caches.
         Args:
-            ec_caches: dictionary of encoder cache
+            ec_main_cache
         """
         # TODO: Implement this later for P2P feature
         return
+        
 
     @abstractmethod
     def start_load_caches(

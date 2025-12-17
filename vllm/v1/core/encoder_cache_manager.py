@@ -94,6 +94,7 @@ class EncoderCacheManager:
         # Cached but currently not referenced by any request
         if not self.cached[mm_hash]:
             num_tokens = self.freeable.pop(mm_hash)
+            logger.debug(f"hero: self.freeable.pop mm_hash self.freeable")
             self.num_freeable_slots -= num_tokens
 
         self.cached[mm_hash].add(request.request_id)
@@ -156,6 +157,7 @@ class EncoderCacheManager:
         while num_tokens > self.num_free_slots:
             mm_hash, num_free_token = self.freeable.popitem(last=False)
             del self.cached[mm_hash]
+            logger.debug(f"hero: physically deleted cache for mm_hash {mm_hash}")
             self.freed.append(mm_hash)
             self.num_free_slots += num_free_token
         return True
@@ -220,6 +222,7 @@ class EncoderCacheManager:
         if not self.cached[mm_hash]:
             num_tokens = request.get_num_encoder_tokens(input_id)
             self.freeable[mm_hash] = num_tokens
+            logger.debug(f"self.freeable mm_hash {mm_hash}")
             self.num_freeable_slots += num_tokens
 
     def free(self, request: Request) -> None:

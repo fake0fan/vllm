@@ -273,7 +273,7 @@ class CustomTensorPool:
             self.offset = 0
         tensor = self.pool[self.offset:self.offset + size]  
         if mm_hash:  
-            self.allocated_blocks[mm_hash] = (self.offset, size)  
+            self.allocated_blocks[mm_hash] = {"offset": self.offset, "size": size}  
         self.offset += size  
         return tensor  
 
@@ -388,7 +388,8 @@ class GPUModelRunner(
         ## nixl cache!
         # ==================================================================
         self.ec_main_cache: torch.Tensor | None = None
-        if has_ec_transfer() and get_ec_transfer().is_producer:
+        # if has_ec_transfer() and get_ec_transfer().is_producer:
+        if has_ec_transfer():
             # For encoder, self.max_num_tokens => max number of encoder input
             if self.max_num_tokens > 0:
                 self.ec_main_cache = CustomTensorPool(
@@ -404,7 +405,7 @@ class GPUModelRunner(
                     self.ec_main_cache.pool.shape,
                     self.ec_main_cache.pool.dtype,
                 )
-                get_ec_transfer().register_encoder_cache(self.ec_main_cache.pool)
+                get_ec_transfer().register_encoder_cache(self.ec_main_cache)
             else:
                 logger.warning(
                     "EC transfer producer enabled but max_encoder_len == 0; "
@@ -2195,7 +2196,23 @@ class GPUModelRunner(
             pooled_tensor = self.ec_main_cache.allocate(  
                 tensor_size,   
                 mm_hash=mm_hash  
-            ).view(output.shape)  
+            ).view(output.shape)
+            
+            # evict cache when pool run out of space
+            logger.info(f"hero: self.ec_main_cache.allocated_blocks.items(): {self.ec_main_cache.allocated_blocks.items()}")
+            keys = list(self.ec_main_cache.allocated_blocks.keys())
+            for mm_hash_allocated in keys:
+                pooled_tensor_start = self.ec_main_cache.offset
+                pooled_tensor_end = self.ec_main_cache.offset + tensor_size
+                cache_start = self.ec_main_cache.allocated_blocks[mm_hash_allocated]["offset"]
+                cache_end = self.ec_main_cache.allocated_blocks[mm_hash_allocated]["offset"] + self.ec_main_cache.allocated_blocks[mm_hash_allocated]["size"]
+                
+                if (pooled_tensor_start < cache_start and pooled_tensor_end < cache_start) or (pooled_tensor_start > cache_end and pooled_tensor_end > cache_end):
+                    continue
+                else:
+                    logger.info(f"hero: from encoder_cache pop mm_hash {mm_hash_allocated}; {pooled_tensor_start, pooled_tensor_end, cache_start, cache_end}")
+                    self.encoder_cache.pop(mm_hash_allocated, None)
+                    self.ec_main_cache.allocated_blocks.pop(mm_hash_allocated, None)
 
             # Copy encoder output to pooled location  
             pooled_tensor.copy_(output)
@@ -2210,7 +2227,7 @@ class GPUModelRunner(
                 is_embed=pos_info.is_embed,
             )
             logger.debug("Finish execute for mm hash %s", mm_hash)
-            logger.debug(f"hero: size: {self.encoder_cache[mm_hash].size()} / self.encoder_cache[mm_hash] for {mm_hash}: {self.encoder_cache[mm_hash]}")
+            # logger.debug(f"hero: size: {self.encoder_cache[mm_hash].size()} / self.encoder_cache[mm_hash] for {mm_hash}: {self.encoder_cache[mm_hash]}")
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         return encoder_outputs
@@ -2270,6 +2287,7 @@ class GPUModelRunner(
 
                 mm_hash = mm_feature.identifier
                 encoder_output = self.encoder_cache.get(mm_hash, None)
+                logger.debug(f"hero: self.encoder_cache key: {self.encoder_cache.keys()}")
                 assert encoder_output is not None, f"Encoder cache miss for {mm_hash}."
 
                 if (is_embed := pos_info.is_embed) is not None:

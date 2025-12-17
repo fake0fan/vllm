@@ -140,7 +140,7 @@ class NixlECConnector(ECConnectorBase):
 
     def register_encoder_cache(
         self,
-        ec_cache: torch.Tensor,
+        ec_cache,
     ):
         """Register encoder cache tensors with NIXL."""
         assert self.connector_worker is not None
@@ -483,6 +483,8 @@ class NixlECConnectorWorker:
         self.encoder_cache: Optional[torch.Tensor] = None
         self.enc_base_addr = 0
         self.enc_token_bytes = 0
+        self.hidden_size = vllm_config.model_config.get_hidden_size()
+        logger.debug(f"hero: self.hidden_size: {self.hidden_size}")
         self._registered_descs: list[Any] = []
         # TODO: find a more elegant way to store & manage mm_base_addr
         self._ENCODER_MM_BASE_ADDRS: dict[EngineId, dict[MMHash, int]] = {}
@@ -531,14 +533,15 @@ class NixlECConnectorWorker:
         if self._nixl_handshake_listener_t:
             self._nixl_handshake_listener_t.join(timeout=0)
 
-    def register_encoder_cache(self, encoder_cache: torch.Tensor):
+    def register_encoder_cache(self, encoder_cache):
         """Register the main encoder cache tensor with NIXL."""
-        self.encoder_cache = encoder_cache
-        self.enc_base_addr = encoder_cache.data_ptr()
+        self.ec_main_cache = encoder_cache
+        self.encoder_cache = encoder_cache.pool
+        self.enc_base_addr = encoder_cache.pool.data_ptr()
         self.enc_token_bytes = (
-            encoder_cache[0].numel() * encoder_cache.element_size()
+            encoder_cache.pool[0].numel() * encoder_cache.pool.element_size()
         )
-        enc_size_bytes = encoder_cache.numel() * encoder_cache.element_size()
+        enc_size_bytes = encoder_cache.pool.numel() * encoder_cache.pool.element_size()
 
         caches_data = [(self.enc_base_addr, enc_size_bytes, 0, "")]
         descs = self.nixl_wrapper.get_reg_descs(
@@ -775,17 +778,19 @@ class NixlECConnectorWorker:
     ):
         """Register a receive tensor for encoder cache transfer."""
         base_addr = recv_tensor.data_ptr()
-        size_bytes = recv_tensor.numel() * recv_tensor.element_size()
+        # size_bytes = recv_tensor.numel() * recv_tensor.element_size()
 
-        self.device_id = max(recv_tensor.get_device(), 0)
-        caches_data = [(base_addr, size_bytes, self.device_id, "")]
+        # self.device_id = max(recv_tensor.get_device(), 0)
+        # caches_data = [(base_addr, size_bytes, self.device_id, "")]
 
-        descs = self.nixl_wrapper.get_reg_descs(
-            caches_data, self.nixl_memory_type
-        )
-        logger.debug("Registering descs: %s", caches_data)
-        self.nixl_wrapper.register_memory(descs)
-        logger.debug("Done registering descs")
+        # descs = self.nixl_wrapper.get_reg_descs(
+        #     caches_data, self.nixl_memory_type
+        # )
+        # logger.debug("Registering descs: %s", caches_data)
+        # self.nixl_wrapper.register_memory(descs)
+        # logger.debug("Done registering descs")
+
+        descs = "dummy" # hero
         self._registered_mm_descs[mm_hash] = (
             base_addr,
             descs,
@@ -816,7 +821,7 @@ class NixlECConnectorWorker:
         logger.debug(f"hero: start_load_caches: {metadata.reqs_to_recv.items()}")
 
         # Reference the encoder_cache
-        self._encoder_cache_dict = encoder_cache
+        # self._encoder_cache_dict = encoder_cache
 
         # hero
         # # First, register all receive tensors from encoder_cache
@@ -864,7 +869,7 @@ class NixlECConnectorWorker:
             # time.sleep(2)
             # logger.debug(f"hero: wait 2 for request ready before read mm")
             # Handshake completed, start async read transfer
-            self._read_mm_segments(mm_hash, meta)
+            self._read_mm_segments(mm_hash, meta, encoder_cache)
 
         if metadata.reqs_to_recv:   # if not empty
             for mm_hash, meta in metadata.reqs_to_recv.items():
@@ -884,12 +889,14 @@ class NixlECConnectorWorker:
 
         while not self._ready_requests.empty():
             logger.debug(f"while not self._ready_requests.empty():")
-            self._read_mm_segments(*self._ready_requests.get_nowait())
+            self._read_mm_segments(*self._ready_requests.get_nowait(), encoder_cache)
 
         # Add to requests waiting to be read
         self._reqs_to_send.update(metadata.reqs_to_send)
 
-    def _read_mm_segments(self, mm_hash: str, meta: ECReqMeta):
+        self._encoder_cache_dict = encoder_cache
+
+    def _read_mm_segments(self, mm_hash: str, meta: ECReqMeta, encoder_cache):
         """Read encoder cache from remote via NIXL.
         
         Transfers the entire encoder cache tensor for the given mm_hash.
@@ -909,7 +916,7 @@ class NixlECConnectorWorker:
             self.nixl_wrapper.send_notif(agent_name, notif_msg=notif_id)
             return
 
-        if mm_hash not in self._registered_mm_descs:
+        if mm_hash not in self._registered_mm_descs or mm_hash not in encoder_cache:
             if remote_engine_id not in self._remote_enc_base_addr:
                 logger.error(
                     "Remote encoder base addr for engine %s not found when "
@@ -927,27 +934,37 @@ class NixlECConnectorWorker:
             base_addr, token_bytes = self._remote_enc_base_addr[remote_engine_id]
 
             # Derive hidden size from bytes-per-token and dtype element size.
-            elem_size = torch.tensor([], dtype=self.encoder_cache_dtype).element_size()
-            assert token_bytes % elem_size == 0, (
-                f"enc_token_bytes {token_bytes} not divisible by element size "
-                f"{elem_size} for dtype {self.encoder_cache_dtype}"
-            )
-            hidden_size = token_bytes // elem_size
+            # elem_size = torch.tensor([], dtype=self.encoder_cache_dtype).element_size()
+            # assert token_bytes % elem_size == 0, (
+            #     f"enc_token_bytes {token_bytes} not divisible by element size "
+            #     f"{elem_size} for dtype {self.encoder_cache_dtype}"
+            # )
+            # hidden_size = token_bytes // elem_size
 
+            hidden_size = self.hidden_size
+
+            logger.info(f"hero: before recv_tensor empty mm_hash {mm_hash}")
             # Allocate local receive tensor and expose it to the encoder_cache dict.
-            recv_tensor = torch.empty(
-                (num_encoder_tokens, hidden_size),
-                device=self.device_type,
-                dtype=self.encoder_cache_dtype,
-            )
+            # recv_tensor = torch.empty(
+            #     (num_encoder_tokens, hidden_size),
+            #     device=self.device_type,
+            #     dtype=self.encoder_cache_dtype,
+            # )
 
-            assert self._encoder_cache_dict is not None
-            logger.debug(f"hero: self._encoder_cache_dict: {self._encoder_cache_dict}")
-            self._encoder_cache_dict[mm_hash] = recv_tensor
+            recv_tensor = self.ec_main_cache.allocate(num_encoder_tokens, mm_hash=mm_hash)
 
-            logger.debug(f"hero: self._encoder_cache_dict after recv_tensor: {self._encoder_cache_dict}")
+            logger.info(f"hero: after recv_tensor empty mm_hash {mm_hash}")
+
+            # assert self._encoder_cache_dict is not None
+            assert encoder_cache is not None
+            # logger.debug(f"hero: self._encoder_cache_dict: {self._encoder_cache_dict}")
+            # self._encoder_cache_dict[mm_hash] = recv_tensor
+            encoder_cache[mm_hash] = recv_tensor # hero
+            logger.debug(f"hero: encoder_cache.keys() after recv_tensor: len:{len(encoder_cache.keys()), encoder_cache.keys()}")
+
+            # logger.debug(f"hero: self._encoder_cache_dict after recv_tensor: {self._encoder_cache_dict}")
             
-            logger.debug(f"hero: size: {recv_tensor.size(), self._encoder_cache_dict[mm_hash].size()} / recv_tensor for {mm_hash}: {self._encoder_cache_dict[mm_hash]}")
+            # logger.debug(f"hero: size: {recv_tensor.size(), self._encoder_cache_dict[mm_hash].size()} / recv_tensor for {mm_hash}: {self._encoder_cache_dict[mm_hash]}")
 
             logger.debug(
                 "Allocating receive tensor for mm_hash %s with shape %s "
@@ -1083,12 +1100,13 @@ class NixlECConnectorWorker:
         # hero:
         if self._encoder_cache_dict is not None:
             self._encoder_cache_dict[mm_hash] = recv_tensor.clone()
+            logger.debug(f"hero: self._encoder_cache_dict.keys(): len:{len(self._encoder_cache_dict.keys()), self._encoder_cache_dict.keys()}")
             logger.debug(
                 "Copied received encoder cache for mm_hash %s, shape: %s",
                 mm_hash,
                 recv_tensor.shape,
             )
-            logger.debug(f"hero: mm_hash {mm_hash} cloned tensor: {recv_tensor}")
+            # logger.debug(f"hero: mm_hash {mm_hash} cloned tensor: {recv_tensor}")
 
         logger.debug(
             "Encoder cache transfer completed for mm_hash %s, shape: %s",
@@ -1134,8 +1152,9 @@ class NixlECConnectorWorker:
             for handle, _xfer_stime in handles:
                 xfer_state = self.nixl_wrapper.check_xfer_state(handle)
                 if xfer_state == "DONE":
-                    self.nixl_wrapper.release_xfer_handle(handle)
-                    self._release_mm_handle(mm_hash, handle)
+                    # self.nixl_wrapper.release_xfer_handle(handle)
+                    # self._release_mm_handle(mm_hash, handle)
+                    xfer_state == "DONE" # hero
                 elif xfer_state == "PROC":
                     in_progress = True
                     continue
@@ -1152,7 +1171,7 @@ class NixlECConnectorWorker:
         """Release NIXL handles and deregister memory for a completed transfer."""
         if (mm_hash, handle) not in self._xfer_side_mm_handle:
             return
-
+        logger.debug(f"hero: _release_mm_handle")
         _, src_xfer_handle, dst_xfer_handle = self._xfer_side_mm_handle[
             (mm_hash, handle)
         ]
