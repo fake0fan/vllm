@@ -419,14 +419,26 @@ class ECMooncakeStore:
             )
 
             await asyncio.gather(meta_task, data_task)
+
+            # On success, do not free buffer_addrs
+            # Tensor pool will automatically free for us
+            buffer_addrs = []
+        except asyncio.TimeoutError:
+            logger.error(
+                "Timeout while putting keys %s (timeout=%s seconds)",
+                ",".join(keys),
+                self.config.transfer_timeout,
+            )
         except Exception as e:
-            with self.pool_lock:
-                self.tensor_pool.batch_free(buffer_addrs)
             logger.error(
                 "Failed to put keys %s using batch_put_from with error %s",
                 ",".join(keys),
                 str(e),
             )
+        finally:
+            if buffer_addrs:
+                with self.pool_lock:
+                    self.tensor_pool.batch_free(buffer_addrs)
 
     async def _batch_put(self, keys: list[str], tensors: list[torch.Tensor]) -> None:
         bytes_list = []

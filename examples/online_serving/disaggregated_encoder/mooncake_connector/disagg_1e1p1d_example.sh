@@ -104,7 +104,6 @@ mooncake_master \
   --eviction_ratio 0.05 \
   --eviction_high_watermark_ratio 0.9 \
   >"$MOONCAKE_MASTER_LOG" 2>&1 &
-MOONCAKE_MASTER_PID=($!)
 
 export MC_MS_AUTO_DISC=0
 

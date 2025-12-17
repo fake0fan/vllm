@@ -21,6 +21,12 @@ DEFAULT_BUFFER_SIZE = 1024
 
 # Fake implementation of MooncakeDistributedStore for testing
 class FakeMooncakeDistributedStore:
+    """A fake implementation of MooncakeDistributedStore used as a test double.
+
+    This mock class is used in unit tests to simulate the behavior of the
+    MooncakeDistributedStore without requiring the actual Mooncake library.
+    """
+
     def __init__(self):
         self.data = {}  # key -> bytes or tensors
         self.registered_buffers: set[tuple[int, int]] = set()
@@ -51,7 +57,6 @@ class FakeMooncakeDistributedStore:
     def batch_get_into(self, keys, addrs, sizes):
         results = []
         for key, addr, size in zip(keys, addrs, sizes):
-            addr = addr if type(addr) is mock.Mock else addr
             if key in self.data and any(
                 addr >= baddr and addr + size <= baddr + bsize
                 for baddr, bsize in self.registered_buffers

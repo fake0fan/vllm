@@ -24,11 +24,11 @@ MOONCAKE_MASTER_PORT=50051
 MOONCAKE_METADATA_PORT=8080
 MOONCAKE_MASTER_IP="localhost"                              # producer
 MOONCAKE_STORE_INSTANCE_IP="localhost"                      # consumer
-MOONCAKE_GLOBAL_SEGMENT_SIZE=$((1 * 1073741824))            # Rcm: 30 GB
+MOONCAKE_GLOBAL_SEGMENT_SIZE=$((30 * 1073741824))
 MOONCAKE_LOCAL_BUFFER_SIZE=$((1 * 1073741824))
 MOONCAKE_REPLICA_NUM=1
 MOONCAKE_FAST_TRANSFER=true
-MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=$((1 * 1073741824))      # Rcm: 30 GB
+MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=$((30 * 1073741824))
 
 ###############################################################################
 # Helpers

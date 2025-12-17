@@ -162,8 +162,8 @@ class ECConnectorBase(ABC):
     def wait_for_save(self):
         """
         Block until all the save operations is done. This is called
-        to ensure that the async is complete before notifying the proxy
-        that processing image is finished.
+        to ensure that async operations are is complete before
+        notifying the proxy that processing image is finished.
         """
         return
 

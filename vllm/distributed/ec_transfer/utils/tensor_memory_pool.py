@@ -26,45 +26,36 @@ class InsufficientMemoryError(ValueError):
     pass
 
 
-"""A memory pool for managing pinned host memory allocations for tensors.
-
-This class implements a buddy allocation system to efficiently manage pinned
-host memory for tensor storage. It supports allocation, deallocation, and
-tensor storage/retrieval operations.
-
-Key Features:
-- Uses power-of-two block sizes for efficient buddy allocation
-- Supports splitting and merging of memory blocks
-- Provides methods to store CUDA tensors in pinned host memory
-- Allows loading tensors from pinned memory back to device
-- Automatically cleans up memory on destruction
-
-Attributes:
-    max_block_size (int): Maximum block size (rounded to nearest power of two)
-    min_block_size (int): Minimum block size (rounded to nearest power of two)
-    free_lists (dict): Dictionary of free memory blocks by size
-    allocated_blocks (dict): Dictionary of currently allocated blocks
-    base_tensor (torch.Tensor): Base pinned memory tensor
-    base_address (int): Base memory address of the pinned memory region
-
-Example:
-    >>> pool = TensorMemoryPool(max_block_size=1024*1024)
-    >>> tensor = torch.randn(100, device='cuda')
-    >>> addr = pool.store_tensor(tensor)
-    >>> loaded_tensor = pool.load_tensor(addr, tensor.dtype,
-    ...                                  tensor.shape, 'cuda')
-    >>> pool.free(addr)
-"""
-
-
 class TensorMemoryPool:
-    """Initializes the memory pool with given size constraints.
-    On top of tensorpool in KV, this supports eviction with FIFO
+    """
+    A memory pool for managing pinned host memory allocations for tensors.
 
-    Args:
-        max_block_size (int): Maximum size of memory blocks to manage
-        min_block_size (int, optional): Minimum size of memory blocks
-            to manage. Defaults to 512.
+    This class implements a buddy allocation system to efficiently manage pinned
+    host memory for tensor storage. It supports allocation, deallocation, and
+    tensor storage/retrieval operations.
+
+    Key Features:
+    - Automatically evict when pool is full using FIFO policy
+    - Uses power-of-two block sizes for efficient buddy allocation
+    - Supports splitting and merging of memory blocks
+    - Provides methods to store CUDA tensors in pinned host memory
+    - Allows loading tensors from pinned memory back to device
+    - Automatically cleans up memory on destruction
+
+    Attributes:
+        max_block_size (int): Maximum block size (rounded to nearest power of two)
+        min_block_size (int): Minimum block size (rounded to nearest power of two)
+        free_lists (dict): Dictionary of free memory blocks by size
+        allocated_blocks (dict): Dictionary of currently allocated blocks
+        base_tensor (torch.Tensor): Base pinned memory tensor
+        base_address (int): Base memory address of the pinned memory region
+
+    Example:
+        >>> pool = TensorMemoryPool(max_block_size=1024 * 1024)
+        >>> tensor = torch.randn(100, device="cuda")
+        >>> addr = pool.store_tensor(tensor)
+        >>> loaded_tensor = pool.load_tensor(addr, tensor.dtype, tensor.shape, "cuda")
+        >>> pool.free(addr)
 
     Raises:
         ValueError: If block sizes are invalid or max_block_size is less
@@ -166,14 +157,18 @@ class TensorMemoryPool:
         """Frees an allocated memory block.
 
         Args:
-            addr (int): Address of the block to free
+            addr (int | None): Address of the block to free.
+            When it is None, the first block is evicted.
 
         Raises:
             ValueError: If address is invalid or not allocated
         """
         if addr is None:
-            # Retrieved the earliest inserted key
-            addr = next(iter(self.allocated_blocks))
+            if self.allocated_blocks:
+                # Retrieved the earliest inserted key
+                addr = next(iter(self.allocated_blocks))
+            else:
+                raise ValueError("No available block to free")
 
         if addr not in self.allocated_blocks:
             raise ValueError("Invalid address to free")
