@@ -1859,7 +1859,6 @@ class Scheduler(SchedulerInterface):
 
         return self.ec_connector.request_finished(request)
 
-
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self.kv_cache_manager.free(request)
