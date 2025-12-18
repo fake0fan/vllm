@@ -24,11 +24,11 @@ MOONCAKE_MASTER_PORT=50051
 MOONCAKE_METADATA_PORT=8080
 MOONCAKE_MASTER_IP="localhost"                              # producer
 MOONCAKE_STORE_INSTANCE_IP="localhost"                      # consumer
-MOONCAKE_GLOBAL_SEGMENT_SIZE=$((1 * 1073741824))            # Rcm: 30 GB
-MOONCAKE_LOCAL_BUFFER_SIZE=$((1 * 1073741824))              # Rcm: 1 GB
+MOONCAKE_GLOBAL_SEGMENT_SIZE=$((30 * 1073741824))
+MOONCAKE_LOCAL_BUFFER_SIZE=$((1 * 1073741824))
 MOONCAKE_REPLICA_NUM=1
 MOONCAKE_FAST_TRANSFER=true
-MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=$((1 * 1073741824))      # Rcm: 30 GB
+MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=$((30 * 1073741824))
 
 ###############################################################################
 # Helpers
@@ -109,8 +109,8 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 4096 \
-    --max-num-seqs 16 \
+    --max-num-batched-tokens 65536 \
+    --max-num-seqs 128 \
     --ec-transfer-config "{
         \"ec_connector\": \"ECMooncakeStorageConnector\",
         \"ec_role\": \"ec_producer\",
@@ -139,7 +139,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 16 \
+    --max-num-seqs 128 \
     --ec-transfer-config "{
         \"ec_connector\": \"ECMooncakeStorageConnector\",
         \"ec_role\": \"ec_consumer\",
