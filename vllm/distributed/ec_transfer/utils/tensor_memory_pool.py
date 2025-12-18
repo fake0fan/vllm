@@ -214,7 +214,7 @@ class TensorMemoryPool:
         Raises:
             ValueError: If tensor is not on CUDA or allocation fails
         """
-        if not tensor.is_cuda:
+        if tensor.get_device() == -1:
             raise ValueError("Only CUDA tensors can be stored")
 
         size = tensor.element_size() * tensor.numel()

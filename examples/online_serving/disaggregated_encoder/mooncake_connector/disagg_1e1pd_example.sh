@@ -109,8 +109,8 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 4096 \
-    --max-num-seqs 16 \
+    --max-num-batched-tokens 65536 \
+    --max-num-seqs 128 \
     --ec-transfer-config "{
         \"ec_connector\": \"ECMooncakeStorageConnector\",
         \"ec_role\": \"ec_producer\",
@@ -139,7 +139,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 16 \
+    --max-num-seqs 128 \
     --ec-transfer-config "{
         \"ec_connector\": \"ECMooncakeStorageConnector\",
         \"ec_role\": \"ec_consumer\",
