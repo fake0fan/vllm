@@ -35,6 +35,9 @@ from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
+from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import (
+    TensorMemoryPool,
+)
 from vllm.distributed.parallel_state import (
     get_dcp_group,
     get_pp_group,
@@ -167,7 +170,6 @@ from vllm.v1.worker.ubatch_utils import (
 )
 from vllm.v1.worker.utils import is_residual_scattered_for_sp, scatter_mm_placeholders
 from vllm.v1.worker.workspace import lock_workspace
-from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import TensorMemoryPool
 
 from .utils import (
     AttentionGroup,
