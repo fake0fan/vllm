@@ -259,7 +259,15 @@ class DeltaMessage(OpenAIBaseModel):
     role: str | None = None
     content: str | None = None
     reasoning: str | None = None
+    reasoning_content: str | None = None
+    """Deprecated: use `reasoning` instead."""
     tool_calls: list[DeltaToolCall] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def handle_deprecated_reasoning_content(self):
+        """Copy reasoning to reasoning_content for backward compatibility."""
+        self.reasoning_content = self.reasoning
+        return self
 
 
 class GenerationError(Exception):
@@ -268,3 +276,56 @@ class GenerationError(Exception):
     def __init__(self, message: str = "Internal server error"):
         super().__init__(message)
         self.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+
+####### Tokens IN <> Tokens OUT #######
+class GenerateRequest(BaseModel):
+    request_id: str = Field(
+        default_factory=random_uuid,
+        description=(
+            "The request_id related to this request. If the caller does "
+            "not set it, a random_uuid will be generated. This id is used "
+            "through out the inference process and return in response."
+        ),
+    )
+    token_ids: list[int]
+    """The token ids to generate text from."""
+
+    # features: MultiModalFeatureSpec
+    # TODO (NickLucche): implement once Renderer work is completed
+    features: str | None = None
+    """The processed MM inputs for the model."""
+
+    sampling_params: SamplingParams
+    """The sampling parameters for the model."""
+
+    model: str | None = None
+
+    stream: bool | None = False
+    stream_options: StreamOptions | None = None
+    cache_salt: str | None = Field(
+        default=None,
+        description=(
+            "If specified, the prefix cache will be salted with the provided "
+            "string to prevent an attacker to guess prompts in multi-user "
+            "environments. The salt should be random, protected from "
+            "access by 3rd parties, and long enough to be "
+            "unpredictable (e.g., 43 characters base64-encoded, corresponding "
+            "to 256 bit)."
+        ),
+    )
+    priority: int = Field(
+        default=0,
+        description=(
+            "The priority of the request (lower means earlier handling; "
+            "default: 0). Any priority other than 0 will raise an error "
+            "if the served model does not use priority scheduling."
+        ),
+    )
+    kv_transfer_params: dict[str, Any] | None = Field(
+        default=None,
+        description="KVTransfer parameters used for disaggregated serving.",
+    )
+    ec_transfer_params: dict[str, Any] | None = Field(
+        default=None,
+        description="ECTransfer parameters used for disaggregated serving.",
+    )

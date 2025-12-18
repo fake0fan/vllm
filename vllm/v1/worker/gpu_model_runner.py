@@ -199,8 +199,9 @@ from vllm.v1.worker.ubatch_utils import (
     maybe_create_ubatch_slices,
     split_attn_metadata,
 )
-from vllm.v1.worker.utils import is_residual_scattered_for_sp
+from vllm.v1.worker.utils import is_residual_scattered_for_sp, scatter_mm_placeholders
 from vllm.v1.worker.workspace import lock_workspace
+from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import TensorMemoryPool
 
 from .utils import (
     AttentionGroup,
@@ -848,6 +849,10 @@ class GPUModelRunner(
         # Model weight offloader
         # Make sure this is called before any get_offloader call
         set_offloader(create_offloader(self.offload_config))
+
+        if has_ec_transfer():
+            self.ec_main_cache = TensorMemoryPool()
+            get_ec_transfer().register_encoder_cache(self.ec_main_cache)
 
         # Ephemeral state transferred between execute_model() and sample_tokens().
         self.execute_model_state: ExecuteModelState | None = None
@@ -2889,8 +2894,16 @@ class GPUModelRunner(
             current_item_idx += num_items
 
         # Cache the encoder outputs by mm_hash
-        for mm_hash, output in zip(mm_hashes, encoder_outputs):
-            self.encoder_cache[mm_hash] = output
+        for mm_hash, (_, pos_info), output in zip(mm_hashes, mm_lora_refs, encoder_outputs):
+            if hasattr(self, 'ec_main_cache') and self.ec_main_cache is not None:
+                addr = self.ec_main_cache.store_tensor(output)
+                pooled_tensor = self.ec_main_cache.load_tensor(addr)
+                self.encoder_cache[mm_hash] = scatter_mm_placeholders(
+                    pooled_tensor,
+                    is_embed=pos_info.is_embed,
+                )
+            else:
+                self.encoder_cache[mm_hash] = output
             logger.debug("Finish execute for mm hash %s", mm_hash)
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
