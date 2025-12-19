@@ -27,8 +27,7 @@ MOONCAKE_STORE_INSTANCE_IP="localhost"                      # consumer
 MOONCAKE_GLOBAL_SEGMENT_SIZE=$((30 * 1073741824))
 MOONCAKE_LOCAL_BUFFER_SIZE=$((1 * 1073741824))
 MOONCAKE_REPLICA_NUM=1
-MOONCAKE_FAST_TRANSFER=true
-MOONCAKE_FAST_TRANSFER_BUFFER_SIZE=$((30 * 1073741824))
+MOONCAKE_TRANSFER_BUFFER_SIZE=$((30 * 1073741824))
 
 ###############################################################################
 # Helpers
@@ -123,8 +122,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
             \"device_name\": \"\",
             \"master_server_address\": \"localhost:$MOONCAKE_MASTER_PORT\",
             \"replica_num\": $MOONCAKE_REPLICA_NUM,
-            \"fast_transfer\": $MOONCAKE_FAST_TRANSFER,
-            \"fast_transfer_buffer_size\": $MOONCAKE_FAST_TRANSFER_BUFFER_SIZE
+            \"transfer_buffer_size\": $MOONCAKE_TRANSFER_BUFFER_SIZE
         }
     }" \
     >"${ENC_LOG}" 2>&1 &
@@ -152,8 +150,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
             \"device_name\": \"\",
             \"master_server_address\": \"localhost:$MOONCAKE_MASTER_PORT\",
             \"replica_num\": $MOONCAKE_REPLICA_NUM,
-            \"fast_transfer\": $MOONCAKE_FAST_TRANSFER,
-            \"fast_transfer_buffer_size\": $MOONCAKE_FAST_TRANSFER_BUFFER_SIZE
+            \"transfer_buffer_size\": $MOONCAKE_TRANSFER_BUFFER_SIZE
         }
     }" \
     >"${PD_LOG}" 2>&1 &

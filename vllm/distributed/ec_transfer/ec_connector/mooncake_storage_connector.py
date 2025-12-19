@@ -9,7 +9,10 @@ from vllm.distributed.ec_transfer.ec_connector.base import (
     ECConnectorMetadata,
     ECConnectorRole,
 )
-from vllm.distributed.ec_transfer.ec_lookup_buffer.mooncake_store import ECMooncakeStore
+from vllm.distributed.ec_transfer.ec_lookup_buffer.mooncake_store import (
+    ECMooncakeStore,
+    MooncakeLoadMeta
+)
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -68,19 +71,22 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         if not metadata.mm_datas:
             return
 
-        mm_hashes = [
-            mm_data.mm_hash
+        load_metas = [
+            MooncakeLoadMeta(
+                key=mm_data.mm_hash,
+                num_token=mm_data.num_token
+            )
             for mm_data in metadata.mm_datas
             if mm_data.mm_hash not in encoder_cache
         ]
         device = self._vllm_config.device_config.device
-        tensors = self.store.batch_get(mm_hashes, device)
+        tensors = self.store.batch_get(load_metas, device)
 
-        for mm_hash, ec_cache in zip(mm_hashes, tensors):
-            encoder_cache[mm_hash] = ec_cache
+        for load_meta, ec_cache in zip(load_metas, tensors):
+            encoder_cache[load_meta.key] = ec_cache
             if ec_cache is None:
-                logger.error("Load failed for %s", mm_hash)
-            logger.debug("Load tensor for %s successfully", mm_hash)
+                logger.error("Load failed for %s", load_meta.key)
+            logger.debug("Load tensor for %s successfully", load_meta.key)
 
     def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
         """
