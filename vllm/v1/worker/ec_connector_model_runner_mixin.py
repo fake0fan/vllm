@@ -31,7 +31,6 @@ class ECConnectorModelRunnerMixin:
         mm_hash: str,
     ):
         if not has_ec_transfer():
-            logger.debug("Not have ec transfer please check")
             return
         connector = get_ec_transfer()
         connector.save_caches(encoder_cache=encoder_cache, mm_hash=mm_hash)
@@ -83,5 +82,5 @@ class ECConnectorModelRunnerMixin:
             output.finished_sending, output.finished_recving = (
                 ec_connector.get_finished(scheduler_output.finished_req_ids)
             )
-
+            ec_connector.maybe_update_remote_cache_state(encoder_cache)
             ec_connector.clear_connector_metadata()
