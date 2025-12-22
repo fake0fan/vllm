@@ -164,20 +164,21 @@ class ECConnectorBase(ABC):
         pass
 
     @abstractmethod
+    def wait_for_load(self) -> None:
+        """
+        Wait until any in-flight cache loads complete.
+        """
+        pass
+
     def maybe_update_remote_cache_state(
         self, encoder_cache: dict[str, torch.Tensor]
     ) -> None:
         """
         Maybe update the remote cache state based on the local encoder cache.
 
-        This method can be used to synchronize or update the state of the
-        remote cache based on changes in the local encoder cache.
-
-        Args:
-            encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal
-                data hashes (`mm_hash`) to encoder cache tensors.
+        Connectors that do not need this hook can rely on the default no-op.
         """
-        pass
+        return
 
     def get_finished(
         self, finished_req_ids: set[str]
