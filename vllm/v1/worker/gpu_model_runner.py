@@ -41,6 +41,9 @@ from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
+from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import (
+    TensorMemoryPool,
+)
 from vllm.distributed.parallel_state import (
     get_dcp_group,
     get_pp_group,
@@ -604,6 +607,10 @@ class GPUModelRunner(
             device="cpu",
             pin_memory=self.pin_memory,
         )
+
+        if has_ec_transfer():
+            self.transfer_pool = TensorMemoryPool(max_block_size=1073741824, device_type="cuda", auto_evict=True)
+            get_ec_transfer().register_encoder_cache(self.transfer_pool)
 
         # Ephemeral state transferred between execute_model() and sample_tokens().
         self.execute_model_state: ExecuteModelState | None = None
@@ -2210,6 +2217,8 @@ class GPUModelRunner(
         req_start_idx = 0
         should_sync_mrope_positions = False
         should_sync_xdrope_positions = False
+
+        self.maybe_wait_for_ec_load()
 
         for req_id in self.input_batch.req_ids:
             mm_embeds_req: list[torch.Tensor] = []
