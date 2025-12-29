@@ -113,12 +113,12 @@ class ECConnectorBase(ABC):
 
     def register_encoder_cache(
         self,
-        ec_main_cache,
+        ec_cache: Any,
     ):
         """
-        Initialize with the EC caches.
+        Initialize and register EC cache.
         Args:
-            ec_main_cache
+            ec_cache
         """
         return
 
@@ -161,6 +161,7 @@ class ECConnectorBase(ABC):
     @abstractmethod
     def wait_for_load(self) -> None:
         """
+        Wait until ec tensors are loaded before they are able to be gathered/used
         """
         pass
 

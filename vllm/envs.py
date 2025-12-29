@@ -182,6 +182,7 @@ if TYPE_CHECKING:
     VLLM_NIXL_SIDE_CHANNEL_HOST: str = "localhost"
     VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5600
     VLLM_MOONCAKE_BOOTSTRAP_PORT: int = 8998
+    VLLM_EC_MOONCAKE_BOOTSTRAP_PORT: int = 9098
     VLLM_ALL2ALL_BACKEND: Literal[
         "naive",
         "pplx",
@@ -1288,6 +1289,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Port used for Mooncake handshake between remote agents.
     "VLLM_MOONCAKE_BOOTSTRAP_PORT": lambda: int(
         os.getenv("VLLM_MOONCAKE_BOOTSTRAP_PORT", "8998")
+    ),
+    # Port used for Mooncake handshake between remote (E-PD) agents.
+    "VLLM_EC_MOONCAKE_BOOTSTRAP_PORT": lambda: int(
+        os.getenv("VLLM_EC_MOONCAKE_BOOTSTRAP_PORT", "9098")
     ),
     # [DEPRECATED - will be removed in v0.15.0] all2all backend for vllm's
     # expert parallel communication. Use --all2all-backend CLI argument instead.

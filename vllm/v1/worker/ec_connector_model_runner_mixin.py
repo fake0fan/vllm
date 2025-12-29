@@ -55,7 +55,7 @@ class ECConnectorModelRunnerMixin:
             if has_ec_transfer()
             else nullcontext()
         )
-    
+
     @staticmethod
     def maybe_wait_for_ec_load():
         if not has_ec_transfer():

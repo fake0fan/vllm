@@ -689,7 +689,15 @@ class GPUModelRunner(
                 )
 
         if has_ec_transfer():
-            self.transfer_pool = TensorMemoryPool(max_block_size=1073741824, device_type="cuda", auto_evict=True)
+            assert vllm_config.ec_transfer_config is not None
+            max_block_size = int(
+                vllm_config.ec_transfer_config.ec_connector_extra_config.get(
+                    "transfer_buffer_size", 1073741824
+                )
+            )
+            self.transfer_pool = TensorMemoryPool(
+                max_block_size=max_block_size, device_type="cuda", auto_evict=True
+            )
             get_ec_transfer().register_encoder_cache(self.transfer_pool)
 
         # Ephemeral state transferred between execute_model() and sample_tokens().
