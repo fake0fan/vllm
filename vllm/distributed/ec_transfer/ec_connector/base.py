@@ -159,6 +159,22 @@ class ECConnectorBase(ABC):
         """
         pass
 
+    @abstractmethod
+    def maybe_update_remote_cache_state(
+        self, encoder_cache: dict[str, torch.Tensor]
+    ) -> None:
+        """
+        Maybe update the remote cache state based on the local encoder cache.
+
+        This method can be used to synchronize or update the state of the
+        remote cache based on changes in the local encoder cache.
+
+        Args:
+            encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal
+                data hashes (`mm_hash`) to encoder cache tensors.
+        """
+        pass
+
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[set[str] | None, set[str] | None]:
@@ -199,7 +215,9 @@ class ECConnectorBase(ABC):
         pass
 
     @abstractmethod
-    def update_state_after_alloc(self, request: "Request", index: int):
+    def update_state_after_alloc(
+        self, request: "Request", index: int, local_hit: bool, remote_hit: bool
+    ):
         """
         Update ECConnector state to decide allocate cache for requests
 

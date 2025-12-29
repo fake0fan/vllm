@@ -280,14 +280,15 @@ class Scheduler(SchedulerInterface):
 
             # Schedule encoder inputs.
             encoder_inputs_to_schedule = None
-            external_load_encoder_input: list[int] = []
+            # List of tuples: (media_index, local_hit, remote_hit)
+            external_update_encoder_input: list[tuple[int, bool, bool]] = []
             new_encoder_compute_budget = encoder_compute_budget
             if request.has_encoder_inputs:
                 (
                     encoder_inputs_to_schedule,
                     num_new_tokens,
                     new_encoder_compute_budget,
-                    external_load_encoder_input,
+                    external_update_encoder_input,
                 ) = self._try_schedule_encoder_inputs(
                     request,
                     request.num_computed_tokens,
@@ -402,11 +403,14 @@ class Scheduler(SchedulerInterface):
                 for i in encoder_inputs_to_schedule:
                     self.encoder_cache_manager.allocate(request, i)
                 encoder_compute_budget = new_encoder_compute_budget
-            if external_load_encoder_input:
-                for i in external_load_encoder_input:
-                    self.encoder_cache_manager.allocate(request, i)
+            if external_update_encoder_input:
+                for i, local_hit, remote_hit in external_update_encoder_input:
+                    if not local_hit:
+                        self.encoder_cache_manager.allocate(request, i)
                     if self.ec_connector is not None:
-                        self.ec_connector.update_state_after_alloc(request, i)
+                        self.ec_connector.update_state_after_alloc(
+                            request, i, local_hit, remote_hit
+                        )
 
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
@@ -511,7 +515,7 @@ class Scheduler(SchedulerInterface):
                     num_computed_tokens = request.num_computed_tokens
 
                 encoder_inputs_to_schedule = None
-                external_load_encoder_input = []
+                external_update_encoder_input = []
                 new_encoder_compute_budget = encoder_compute_budget
 
                 if load_kv_async:
@@ -547,7 +551,7 @@ class Scheduler(SchedulerInterface):
                             encoder_inputs_to_schedule,
                             num_new_tokens,
                             new_encoder_compute_budget,
-                            external_load_encoder_input,
+                            external_update_encoder_input,
                         ) = self._try_schedule_encoder_inputs(
                             request,
                             num_computed_tokens,
@@ -651,11 +655,14 @@ class Scheduler(SchedulerInterface):
                         self.encoder_cache_manager.allocate(request, i)
                     encoder_compute_budget = new_encoder_compute_budget
                 # Allocate for external load encoder cache
-                if external_load_encoder_input:
-                    for i in external_load_encoder_input:
-                        self.encoder_cache_manager.allocate(request, i)
+                if external_update_encoder_input:
+                    for i, local_hit, remote_hit in external_update_encoder_input:
+                        if not local_hit:
+                            self.encoder_cache_manager.allocate(request, i)
                         if self.ec_connector is not None:
-                            self.ec_connector.update_state_after_alloc(request, i)
+                            self.ec_connector.update_state_after_alloc(
+                                request, i, local_hit, remote_hit
+                            )
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
@@ -875,7 +882,7 @@ class Scheduler(SchedulerInterface):
         num_new_tokens: int,
         encoder_compute_budget: int,
         shift_computed_tokens: int = 0,
-    ) -> tuple[list[int], int, int, list[int]]:
+    ) -> tuple[list[int], int, int, list[tuple[int, bool, bool]]]:
         """
         Determine which encoder inputs need to be scheduled in the current step,
         and update `num_new_tokens` and encoder token budget accordingly.
@@ -902,7 +909,9 @@ class Scheduler(SchedulerInterface):
         mm_features = request.mm_features
         assert mm_features is not None
         assert len(mm_features) > 0
-        external_load_encoder_input = []
+        # List of tuples: (media_index, local_hit, remote_hit)
+        # for encoder cache state tracking
+        external_update_encoder_input: list[tuple[int, bool, bool]] = []
 
         # Check remote cache first
         if self.ec_connector is not None:
@@ -957,6 +966,12 @@ class Scheduler(SchedulerInterface):
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
                     # The encoder input is already computed and cached from a
                     # previous step.
+                    # Store to option update remote cache state when hit on local
+                    # encoder cache
+                    if self.ec_connector is not None:
+                        external_update_encoder_input.append(
+                            (i, True, remote_cache_has_item[i])
+                        )
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
@@ -994,7 +1009,9 @@ class Scheduler(SchedulerInterface):
 
             if self.ec_connector is not None and remote_cache_has_item[i]:
                 mm_hashes_to_schedule.add(request.mm_features[i].identifier)
-                external_load_encoder_input.append(i)
+                external_update_encoder_input.append(
+                    (i, False, remote_cache_has_item[i])
+                )
                 num_tokens_to_schedule += num_encoder_tokens
                 continue
 
@@ -1007,7 +1024,7 @@ class Scheduler(SchedulerInterface):
             encoder_inputs_to_schedule,
             num_new_tokens,
             encoder_compute_budget,
-            external_load_encoder_input,
+            external_update_encoder_input,
         )
 
     def get_grammar_bitmask(
