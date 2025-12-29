@@ -11,23 +11,29 @@ LOG_PATH="${LOG_PATH:-./logs}"
 mkdir -p $LOG_PATH
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
-PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
+PREFILL_PORT="${PREFILL_PORT:-19535}"
+DECODE_PORT="${DECODE_PORT:-19536}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-6}"
-GPU_PD="${GPU_PD:-7}"
+GPU_E="${GPU_E:-5}"
+GPU_P="${GPU_P:-6}"
+GPU_D="${GPU_D:-4}"
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
-NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
+
+NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+
+export UCX_TLS=all
+export UCX_NET_DEVICES=all
 
 ###############################################################################
 # Helpers
 ###############################################################################
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
-PD_LOG=$LOG_PATH/pd_${START_TIME}.log
+P_LOG=$LOG_PATH/p_${START_TIME}.log
+D_LOG=$LOG_PATH/d_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
-MOONCAKE_MASTER_LOG="$LOG_PATH/mooncake_master_$START_TIME.log"
 
 wait_for_server() {
     local port=$1
@@ -51,7 +57,7 @@ cleanup() {
     done
     
     # Wait a moment for graceful shutdown
-    wait "${PIDS[@]}" 2>/dev/null || true
+    sleep 2
     
     # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
@@ -60,10 +66,10 @@ cleanup() {
             kill -9 "$pid" 2>/dev/null
         fi
     done
-
-    echo "Force killing mooncake processes"
-    pkill -f "mooncake_master"
-
+    
+    # Kill the entire process group as backup
+    kill -- -$$ 2>/dev/null
+    
     echo "All processes stopped."
     exit 0
 }
@@ -88,8 +94,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
         \"ec_role\": \"ec_producer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_8\",
-            \"transfer_buffer_size\": \"1073741824\"
+            \"device_name\": \"\"
         }
     }" \
     >"${ENC_LOG}" 2>&1 &
@@ -97,11 +102,12 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
 PIDS+=($!)
 
 ###############################################################################
-# Prefill+Decode worker
+# Prefill worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_P" \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
-    --port "$PREFILL_DECODE_PORT" \
+    --port "$PREFILL_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-num-seqs 128 \
@@ -110,17 +116,39 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
         \"ec_role\": \"ec_consumer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_6\",
-            \"transfer_buffer_size\": \"1073741824\"
+            \"device_name\": \"\"
         }
     }" \
-    >"${PD_LOG}" 2>&1 &
+    --kv-transfer-config '{
+        "kv_connector":"MooncakeConnector",
+        "kv_role":"kv_producer"
+    }' \
+    >"${P_LOG}" 2>&1 &
+
+PIDS+=($!)
+
+###############################################################################
+# Decode worker
+###############################################################################
+CUDA_VISIBLE_DEVICES="$GPU_D" \
+vllm serve "$MODEL" \
+    --gpu-memory-utilization 0.7 \
+    --port "$DECODE_PORT" \
+    --enforce-eager \
+    --enable-request-id-headers \
+    --max-num-seqs 128 \
+    --kv-transfer-config '{
+        "kv_connector":"MooncakeConnector",
+        "kv_role":"kv_consumer"
+    }' \
+    >"${D_LOG}" 2>&1 &
 
 PIDS+=($!)
 
 # Wait for workers
 wait_for_server $ENCODE_PORT
-wait_for_server $PREFILL_DECODE_PORT
+wait_for_server $PREFILL_PORT
+wait_for_server $DECODE_PORT
 
 ###############################################################################
 # Proxy
@@ -129,8 +157,8 @@ python ../disagg_epd_proxy.py \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
-    --prefill-servers-urls "disable" \
-    --decode-servers-urls "http://localhost:$PREFILL_DECODE_PORT" \
+    --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
+    --decode-servers-urls "http://localhost:$DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
 
 PIDS+=($!)
