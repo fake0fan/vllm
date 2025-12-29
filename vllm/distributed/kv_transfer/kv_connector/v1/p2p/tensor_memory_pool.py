@@ -86,7 +86,7 @@ class TensorMemoryPool:
         self.auto_evict = auto_evict
 
         self.free_lists: dict[int, dict[int, MemoryBlock]] = {}
-        self.allocated_blocks: OrderedDict[int, MemoryBlock] = {}
+        self.allocated_blocks: OrderedDict[int, MemoryBlock] = OrderedDict()
 
         self._initialize_free_lists()
         self._allocate_memory()

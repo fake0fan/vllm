@@ -165,27 +165,29 @@ async def fanout_encoder_primer(
             encoder_ec_transfer_params = response_json.get("ec_transfer_params")
             if encoder_ec_transfer_params:
                 # encoder_ec_transfer_params is a dict keyed by mm_hash
-                # Format: {mm_hash: {do_remote_encode, num_encoder_tokens, remote_engine_id, ...}}
                 for mm_hash, mm_hash_params in encoder_ec_transfer_params.items():
-                    # Store params for this mm_hash
                     aggregated_ec_transfer_params[mm_hash] = {
                         "do_remote_encode": mm_hash_params.get(
                             "do_remote_encode", True
                         ),
-                        "num_encoder_tokens": mm_hash_params.get("num_encoder_tokens"),
-                        "mm_base_addr": mm_hash_params.get("mm_base_addr"),
                         "remote_host": mm_hash_params.get("remote_host"),
                         "remote_port": mm_hash_params.get("remote_port"),
                     }
                     logger.debug(
-                        "[%s] Collected ec_transfer_params for mm_hash %s from encoder #%d",
+                        (
+                            "[%s] Collected ec_transfer_params for "
+                            "mm_hash %s from encoder #%d"
+                        ),
                         req_id,
                         mm_hash,
                         idx,
                     )
         except Exception as e:
             logger.warning(
-                "[%s] Failed to extract ec_transfer_params from encoder response #%d: %s",
+                (
+                    "[%s] Failed to extract ec_transfer_params from encoder response "
+                    "#%d: %s"
+                ),
                 req_id,
                 idx,
                 str(e),
@@ -203,7 +205,10 @@ async def fanout_encoder_primer(
     if aggregated_ec_transfer_params:
         req_data["ec_transfer_params"] = aggregated_ec_transfer_params
         logger.info(
-            "[%s] Added aggregated_ec_transfer_params for %d mm_hashes to prefill request",
+            (
+                "[%s] Added aggregated_ec_transfer_params for %d mm_hashes "
+                "to prefill request"
+            ),
             req_id,
             len(aggregated_ec_transfer_params),
         )

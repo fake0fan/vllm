@@ -118,12 +118,12 @@ class ECConnectorBase(ABC):
 
     def register_encoder_cache(
         self,
-        ec_main_cache,
+        ec_cache: Any,
     ):
         """
-        Initialize with the EC caches.
+        Initialize and register EC cache.
         Args:
-            ec_main_cache
+            ec_cache
         """
         return
 
