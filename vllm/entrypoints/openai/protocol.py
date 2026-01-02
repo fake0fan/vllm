@@ -2520,5 +2520,5 @@ class GenerateResponse(BaseModel):
     )
     ec_transfer_params: dict[str, Any] | None = Field(
         default=None,
-        description="KVTransfer parameters used for disaggregated serving.",
+        description="ECTransfer parameters used for disaggregated serving.",
     )
