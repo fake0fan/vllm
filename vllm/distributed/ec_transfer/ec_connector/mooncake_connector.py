@@ -685,7 +685,7 @@ class MooncakeECConnectorWorker:
             ret_msg = await sock.recv()
             if ret_msg != TRANS_DONE:
                 logger.error(
-                    "Error happens during tranfering kvcache for %s, see logs in prefiller.",  # noqa: E501
+                    "Error happens during transferring encoder cache for %s, see logs in prefiller.",  # noqa: E501
                     mm_hashes,
                 )
                 return
