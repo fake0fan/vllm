@@ -1530,7 +1530,7 @@ class Scheduler(SchedulerInterface):
     ) -> tuple[bool, dict[str, Any] | None]:
         """
         Invoke the EC connector request_finished() method if applicable.
-        Returns optional kv transfer parameters to be included with the
+        Returns optional ec transfer parameters to be included with the
         request outputs.
         """
         if self.ec_connector is None:
