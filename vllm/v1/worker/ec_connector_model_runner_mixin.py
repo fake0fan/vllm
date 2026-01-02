@@ -58,6 +58,13 @@ class ECConnectorModelRunnerMixin:
             else nullcontext()
         )
 
+    @staticmethod
+    def maybe_wait_for_ec_load():
+        if not has_ec_transfer():
+            return
+        connector = get_ec_transfer()
+        connector.wait_for_load()
+
     # This context manager must be used within an active forward context.
     # It encapsulates the entire EC connector lifecycle within execute_model
     @staticmethod
