@@ -388,9 +388,6 @@ async def forward_non_stream(
         logger.info("[%s] Forwarding to decode: %s", req_id, d_url)
         headers = {"x-request-id": req_id}
 
-        # logger.debug(f"hero: make non stream tokens become 3 only")
-        # req_data["max_tokens"] = 3
-
         # Non-streaming response
         async with decode_session.post(
             f"{d_url}/v1/chat/completions", json=req_data, headers=headers
