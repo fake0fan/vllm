@@ -184,7 +184,7 @@ class TensorMemoryPool:
         """
         if not addr:
             if self.allocated_blocks:
-                # Retrieved the earliest inserted key
+                # Retrieve the earliest inserted key
                 addr = next(iter(self.allocated_blocks))
             else:
                 raise ValueError("No available block to free")
