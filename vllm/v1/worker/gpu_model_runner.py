@@ -2321,6 +2321,7 @@ class GPUModelRunner(
             logger.debug("Finish execute for mm hash %s", mm_hash)
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
+        self.maybe_wait_for_ec_save()
         return encoder_outputs
 
     def _gather_mm_embeddings(

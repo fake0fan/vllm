@@ -159,6 +159,14 @@ class ECConnectorBase(ABC):
         """
         pass
 
+    def wait_for_save(self):
+        """
+        Block until all the save operations is done. This is called
+        to ensure that async operations are is complete before
+        notifying the proxy that processing image is finished.
+        """
+        return
+
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[set[str] | None, set[str] | None]:
