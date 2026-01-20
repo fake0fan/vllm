@@ -172,6 +172,8 @@ async def fanout_encoder_primer(
                         ),
                         "remote_host": mm_hash_params.get("remote_host"),
                         "remote_port": mm_hash_params.get("remote_port"),
+                        "num_encoder_tokens": mm_hash_params.get("num_encoder_tokens"),
+                        "remote_engine_id": mm_hash_params.get("remote_engine_id"),
                     }
                     logger.debug(
                         (

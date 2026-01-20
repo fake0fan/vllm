@@ -89,3 +89,9 @@ ECConnectorFactory.register_connector(
     "vllm.distributed.ec_transfer.ec_connector.mooncake_connector",
     "MooncakeECConnector",
 )
+
+ECConnectorFactory.register_connector(
+    "NixlECConnector",
+    "vllm.distributed.ec_transfer.ec_connector.nixl_connector",
+    "NixlECConnector",
+)

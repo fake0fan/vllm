@@ -14,20 +14,24 @@ ENCODE_PORT="${ENCODE_PORT:-19634}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19635}"
 PROXY_PORT="${PROXY_PORT:-10006}"
 
-GPU_E="${GPU_E:-0}"
-GPU_PD="${GPU_PD:-1}"
+GPU_E="${GPU_E:-2}"
+GPU_PD="${GPU_PD:-3}"
 
+EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
-NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
+
+NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
 
 ###############################################################################
 # Helpers
 ###############################################################################
+# Find the git repository root directory
+GIT_ROOT=$(git rev-parse --show-toplevel)
+
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
-MOONCAKE_MASTER_LOG="$LOG_PATH/mooncake_master_$START_TIME.log"
 
 wait_for_server() {
     local port=$1
@@ -51,7 +55,7 @@ cleanup() {
     done
     
     # Wait a moment for graceful shutdown
-    wait "${PIDS[@]}" 2>/dev/null || true
+    sleep 2
     
     # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
@@ -60,10 +64,10 @@ cleanup() {
             kill -9 "$pid" 2>/dev/null
         fi
     done
-
-    echo "Force killing mooncake processes"
-    pkill -f "mooncake_master"
-
+    
+    # Kill the entire process group as backup
+    kill -- -$$ 2>/dev/null
+    
     echo "All processes stopped."
     exit 0
 }
@@ -72,26 +76,32 @@ trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
+# clear previous cache
+echo "remove previous ec cache folder"
+rm -rf $EC_SHARED_STORAGE_PATH
+
+echo "make ec cache folder"
+mkdir -p $EC_SHARED_STORAGE_PATH
+
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.4 \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH/dump \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5569 \
+vllm serve "$MODEL" \
+    --gpu-memory-utilization 0.01 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 65536 \
+    --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
-    --ec-transfer-config "{
-        \"ec_connector\": \"MooncakeECConnector\",
-        \"ec_role\": \"ec_producer\",
-        \"ec_connector_extra_config\": {
-            \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_8\",
-            \"transfer_buffer_size\": \"1073741824\"
-        }
-    }" \
+    --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
+    --ec-transfer-config '{
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_producer"
+    }' \
     >"${ENC_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -99,21 +109,20 @@ PIDS+=($!)
 ###############################################################################
 # Prefill+Decode worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
+VLLM_NIXL_EC_SIDE_CHANNEL_PORT=5579 \
+VLLM_DEBUG_DUMP_PATH=$LOG_PATH/dump \
+CUDA_VISIBLE_DEVICES="$GPU_PD" \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-num-seqs 128 \
-    --ec-transfer-config "{
-        \"ec_connector\": \"MooncakeECConnector\",
-        \"ec_role\": \"ec_consumer\",
-        \"ec_connector_extra_config\": {
-            \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_6\",
-            \"transfer_buffer_size\": \"1073741824\"
-        }
-    }" \
+    --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
+    --ec-transfer-config '{
+        "ec_connector": "NixlECConnector",
+        "ec_role": "ec_consumer"
+    }' \
     >"${PD_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -138,13 +147,30 @@ PIDS+=($!)
 wait_for_server $PROXY_PORT
 echo "All services are up!"
 
-###############################################################################
-# Benchmark
-###############################################################################
+# ###############################################################################
+# # Benchmark
+# ###############################################################################
+# echo "Running benchmark (stream)..."
+# vllm bench serve \
+#   --model               $MODEL \
+#   --backend             openai-chat \
+#   --endpoint            /v1/chat/completions \
+#   --dataset-name        hf \
+#   --dataset-path        lmarena-ai/VisionArena-Chat \
+#   --seed                0 \
+#   --num-prompts         $NUM_PROMPTS \
+#   --save-result \
+#   --save-detailed \
+#   --result-dir $LOG_PATH \
+#   --result-filename ePD_nixl_$(date +"%Y%m%d_%H%M%S").json \
+#   --port                $PROXY_PORT
+
+
+## random mm
 vllm bench serve \
     --model $MODEL \
     --dataset-name random-mm \
-    --num-prompts 100 \
+    --num-prompts $NUM_PROMPTS \
     --random-input-len 400 \
     --random-output-len 100 \
     --random-range-ratio 0.0 \
@@ -156,6 +182,26 @@ vllm bench serve \
     --backend openai-chat \
     --endpoint /v1/chat/completions \
     --port $PROXY_PORT
+
+PIDS+=($!)
+
+# # ###############################################################################
+# # # Single request with local image
+# # ###############################################################################
+# # echo "Running single request with local image (non-stream)..."
+# # curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
+# #     -H "Content-Type: application/json" \
+# #     -d '{
+# #     "model": "'${MODEL}'",
+# #     "messages": [
+# #     {"role": "system", "content": "You are a helpful assistant."},
+# #     {"role": "user", "content": [
+# #         {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+# #         {"type": "text", "text": "What is in this image?"}
+# #     ]}
+# #     ]
+# #     }'
+
 
 # cleanup
 echo "cleanup..."

@@ -14,8 +14,8 @@ ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-0}"
-GPU_PD="${GPU_PD:-1}"
+GPU_E="${GPU_E:-6}"
+GPU_PD="${GPU_PD:-7}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
@@ -151,34 +151,52 @@ echo "All services are up!"
 # Benchmark
 ###############################################################################
 echo "Running benchmark (stream)..."
+## original
+# vllm bench serve \
+#   --model               $MODEL \
+#   --backend             openai-chat \
+#   --endpoint            /v1/chat/completions \
+#   --dataset-name        hf \
+#   --dataset-path        lmarena-ai/VisionArena-Chat \
+#   --seed                0 \
+#   --num-prompts         $NUM_PROMPTS \
+#   --port                $PROXY_PORT
+
+## random mm
 vllm bench serve \
-  --model               $MODEL \
-  --backend             openai-chat \
-  --endpoint            /v1/chat/completions \
-  --dataset-name        hf \
-  --dataset-path        lmarena-ai/VisionArena-Chat \
-  --seed                0 \
-  --num-prompts         $NUM_PROMPTS \
-  --port                $PROXY_PORT
+    --model $MODEL \
+    --dataset-name random-mm \
+    --num-prompts $NUM_PROMPTS \
+    --random-input-len 400 \
+    --random-output-len 100 \
+    --random-range-ratio 0.0 \
+    --random-mm-base-items-per-request 3 \
+    --random-mm-num-mm-items-range-ratio 0 \
+    --random-mm-limit-mm-per-prompt '{"image":10,"video":0}' \
+    --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
+    --ignore-eos \
+    --backend openai-chat \
+    --endpoint /v1/chat/completions \
+    --port $PROXY_PORT
 
 PIDS+=($!)
 
 ###############################################################################
 # Single request with local image
 ###############################################################################
-echo "Running single request with local image (non-stream)..."
-curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-    "model": "'${MODEL}'",
-    "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
-        {"type": "text", "text": "What is in this image?"}
-    ]}
-    ]
-    }'
+# echo "Running single request with local image (non-stream)..."
+# curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{
+#     "model": "'${MODEL}'",
+#     "messages": [
+#     {"role": "system", "content": "You are a helpful assistant."},
+#     {"role": "user", "content": [
+#         {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+#         {"type": "text", "text": "What is in this image?"}
+#     ]}
+#     ]
+#     }'
 
 
 # cleanup
