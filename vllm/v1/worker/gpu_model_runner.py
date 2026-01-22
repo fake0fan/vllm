@@ -2904,7 +2904,9 @@ class GPUModelRunner(
             current_item_idx += num_items
 
         # Cache the encoder outputs by mm_hash
-        for mm_hash, (_, pos_info), output in zip(mm_hashes, mm_lora_refs, encoder_outputs):
+        for mm_hash, (_, pos_info), output in zip(
+            mm_hashes, mm_lora_refs, encoder_outputs
+        ):
             self.encoder_cache[mm_hash] = scatter_mm_placeholders(
                 output,
                 is_embed=pos_info.is_embed,
