@@ -273,7 +273,7 @@ class MooncakeECConnectorScheduler:
 
         if mm_hash_params.get("do_remote_encode"):
             if all(p in mm_hash_params for p in ("remote_host", "remote_port")):
-                num_encoder_tokens = request.get_num_encoder_tokens(index)
+                num_encoder_tokens = request.get_num_encoder_embeds(index)
                 self._mm_hashes_need_recv[Key(mm_hash, request.request_id)] = (
                     request,
                     num_encoder_tokens,
