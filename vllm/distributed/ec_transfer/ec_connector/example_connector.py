@@ -218,14 +218,6 @@ class ECExampleConnector(ECConnectorBase):
                     num_tokens = feature.mm_position.get_num_embeds
                     mm_hashes[mm_hash] = num_tokens
 
-        # Collect from scheduled_running_reqs
-        for req in scheduler_output.scheduled_running_reqs:
-            if hasattr(req, "mm_features") and req.mm_features:
-                for feature in req.mm_features:
-                    mm_hash = feature.identifier
-                    num_tokens = feature.mm_position.get_num_embeds
-                    mm_hashes[mm_hash] = num_tokens
-
         return mm_hashes
 
     # ==============================
