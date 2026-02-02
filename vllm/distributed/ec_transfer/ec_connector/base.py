@@ -210,7 +210,9 @@ class ECConnectorBase(ABC):
 
     @abstractmethod
     def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
+        self,
+        scheduler_output: SchedulerOutput,
+        encoder_cache_manager: Any = None,
     ) -> ECConnectorMetadata:
         """
         Build the connector metadata for this step.
@@ -220,6 +222,9 @@ class ECConnectorBase(ABC):
 
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
+            encoder_cache_manager (EncoderCacheManager, optional): the encoder
+                cache manager to check HBM cache status. Used to determine
+                which caches need to be saved to external storage.
         """
         pass
 

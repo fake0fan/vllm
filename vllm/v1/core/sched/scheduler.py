@@ -874,7 +874,7 @@ class Scheduler(SchedulerInterface):
         # Build the connector meta for ECConnector
         if self.ec_connector is not None:
             ec_meta: ECConnectorMetadata = self.ec_connector.build_connector_meta(
-                scheduler_output
+                scheduler_output, self.encoder_cache_manager
             )
             scheduler_output.ec_connector_metadata = ec_meta
 
@@ -1122,8 +1122,9 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
-                    # The encoder input is already computed and cached from a
-                    # previous step.
+                    # The encoder input is already computed and cached in HBM.
+                    # Skip it - the EC connector will handle saving to external
+                    # storage if needed in build_connector_meta().
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
