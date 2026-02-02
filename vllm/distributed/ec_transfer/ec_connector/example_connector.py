@@ -182,17 +182,17 @@ class ECExampleConnector(ECConnectorBase):
                 if any(m.mm_hash == mm_hash for m in meta.mm_datas):
                     continue
 
-                # Check if external storage doesn't have it
-                if not self.has_cache_item(mm_hash):
-                    # Check if HBM has it
-                    if encoder_cache_manager.has_cache(mm_hash):
-                        # HBM has but external doesn't - mark for saving
-                        meta.add_mm_data(MMMeta.make_meta(mm_hash, num_token))
-                        logger.debug(
-                            "Marking mm_hash %s for saving: HBM has cache but "
-                            "external storage doesn't",
-                            mm_hash,
-                        )
+                # Check if external storage doesn't have it but HBM does
+                if not self.has_cache_item(mm_hash) and encoder_cache_manager.has_cache(
+                    mm_hash
+                ):
+                    # HBM has but external doesn't - mark for saving
+                    meta.add_mm_data(MMMeta.make_meta(mm_hash, num_token))
+                    logger.debug(
+                        "Marking mm_hash %s for saving: HBM has cache but "
+                        "external storage doesn't",
+                        mm_hash,
+                    )
 
         return meta
 
