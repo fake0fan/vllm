@@ -51,6 +51,7 @@ ReqId = str
 
 TRANS_DONE = b"trans_done"
 TRANS_ERROR = b"trans_error"
+CHECK_CACHE_MSG = b"check_cache"
 
 logger = init_logger(__name__)
 
@@ -78,6 +79,25 @@ class MooncakeECAgentMetadata(
 class MMHashMeta:
     num_encoder_tokens: int
     mm_addr: int
+
+
+class MooncakeCacheCheckRequest(
+    msgspec.Struct,
+    omit_defaults=True,  # type: ignore[call-arg]
+    dict=True,
+):
+    """Request to check if cache exists for mm_hash."""
+    mm_hash: str
+
+
+class MooncakeCacheCheckResponse(
+    msgspec.Struct,
+    omit_defaults=True,  # type: ignore[call-arg]
+    dict=True,
+):
+    """Response indicating cache existence."""
+    exists: bool
+    num_encoder_tokens: int  # 0 if not exists
 
 
 @dataclass
@@ -142,10 +162,13 @@ class MooncakeECConnector(ECConnectorBase):
     # Scheduler Side Methods
     ############################################################
 
-    def has_caches(self, request: "Request") -> list[bool]:
-        """Check if encoder cache exists remotely for each mm_data."""
+    def has_cache_item(
+        self,
+        identifier: str,
+    ) -> bool:
+        """Check if encoder cache exists remotely for a single mm item."""
         assert self.connector_scheduler is not None
-        return self.connector_scheduler.has_caches(request)
+        return self.connector_scheduler.has_cache_item(identifier)
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         """Update state after encoder cache allocation."""
@@ -228,29 +251,92 @@ class MooncakeECConnectorScheduler:
 
         # Track mm_hashes that need to be loaded from remote
         self._mm_hashes_need_recv: dict[Key, tuple[Request, int]] = {}
+        
+        # ZMQ context for cache check probes (only on consumer side)
+        if not self.is_producer:
+            self._probe_zmq_ctx = zmq.Context()
+            self._cache_check_request_encoder = msgspec.msgpack.Encoder()
+            self._cache_check_response_decoder = msgspec.msgpack.Decoder(MooncakeCacheCheckResponse)
+        else:
+            self._probe_zmq_ctx = None
+            self._cache_check_request_encoder = None
+            self._cache_check_response_decoder = None
 
-    def has_caches(self, request: "Request") -> list[bool]:
-        """Check if encoder cache exists remotely for each mm_data."""
-        result = []
+    def has_cache_item(
+        self,
+        identifier: str,
+    ) -> bool:
+        """Check if encoder cache exists remotely for a single mm item.
+        
+        Uses real-time probe to query encoder instance directly, avoiding
+        reliance on stale ec_transfer_params.
+        """
+        if self.is_producer:
+            # Producer doesn't check remote cache
+            return False
 
-        ec_transfer_params = getattr(request, "ec_transfer_params", None)
-
-        for feature in request.mm_features:
-            mm_hash = feature.identifier
-
-            if self.is_producer:
-                has_cache = False
-            else:
-                mm_hash_params = (
-                    ec_transfer_params.get(mm_hash) if ec_transfer_params else None
-                )
-                has_cache = bool(
-                    mm_hash_params
-                    and all(p in mm_hash_params for p in ("remote_host", "remote_port"))
-                )
-            result.append(has_cache)
-
-        return result
+        remote_host = self.side_channel_host
+        remote_port = self.side_channel_port
+        
+        # Probe encoder instance for cache existence
+        return self._probe_cache_existence(identifier, remote_host, remote_port)
+    
+    def _probe_cache_existence(
+        self, mm_hash: str, remote_host: str, remote_port: int
+    ) -> bool:
+        """Probe encoder instance to check if cache exists.
+        
+        Returns True if cache exists, False otherwise.
+        """
+        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+        
+        tp_rank = get_tensor_model_parallel_rank()
+        path = make_zmq_path("tcp", remote_host, remote_port + tp_rank)
+        
+        request = MooncakeCacheCheckRequest(mm_hash=mm_hash)
+        request_bytes = self._cache_check_request_encoder.encode(request)
+        
+        # Encode message as (msg_type, request)
+        msg_bytes = msgspec.msgpack.encode((CHECK_CACHE_MSG, request_bytes))
+        
+        try:
+            sock = make_zmq_socket(
+                self._probe_zmq_ctx, path, zmq.REQ, bind=False, linger=0
+            )
+            sock.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
+            
+            sock.send(msg_bytes)
+            response_bytes = sock.recv()
+            
+            # Decode response
+            response = self._cache_check_response_decoder.decode(response_bytes)
+            
+            sock.close()
+            
+            logger.debug(
+                "Cache probe for mm_hash %s: exists=%s",
+                mm_hash,
+                response.exists
+            )
+            
+            return response.exists
+            
+        except zmq.Again:
+            logger.warning(
+                "Cache probe timeout for mm_hash %s at %s",
+                mm_hash,
+                path
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                "Cache probe failed for mm_hash %s at %s: %s",
+                mm_hash,
+                path,
+                e
+            )
+            return False
+    
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         """Update state after encoder cache allocation."""
@@ -436,6 +522,8 @@ class MooncakeECConnectorWorker:
         self.async_zmq_ctx = zmq.asyncio.Context()
         self._encoder = msgspec.msgpack.Encoder()
         self._decoder = msgspec.msgpack.Decoder(MooncakeECAgentMetadata)
+        self._cache_check_decoder = msgspec.msgpack.Decoder(MooncakeCacheCheckRequest)
+        self._cache_check_encoder = msgspec.msgpack.Encoder()
 
     def __del__(self):
         self.shutdown()
@@ -444,7 +532,7 @@ class MooncakeECConnectorWorker:
         """Cleanup background threads on destruction."""
         self.zmq_ctx.term()
         self.async_zmq_ctx.term()
-        if not self.is_producer:
+        if self.is_producer:
             self._sender_executor.shutdown(wait=False)
             if self._mooncake_sender_t:
                 self._mooncake_sender_t.join()
@@ -488,13 +576,36 @@ class MooncakeECConnectorWorker:
                 sockets = dict(poller.poll())
 
                 if frontend in sockets:
-                    identity, _, metadata_bytes = frontend.recv_multipart()
-                    self._sender_executor.submit(
-                        self._sender_worker,
-                        identity,
-                        metadata_bytes,
-                        backend_path,
-                    )
+                    identity, _, msg_bytes = frontend.recv_multipart()
+                    # Check message type
+                    try:
+                        decoded = msgspec.msgpack.decode(msg_bytes)
+                        if isinstance(decoded, (list, tuple)) and len(decoded) >= 2:
+                            msg_type, request_bytes = decoded[0], decoded[1]
+                        else:
+                            msg_type = decoded
+                            request_bytes = msg_bytes
+                        
+                        if msg_type == CHECK_CACHE_MSG:
+                            # Handle cache check synchronously (fast operation)
+                            self._handle_cache_check(identity, request_bytes, frontend)
+                        else:
+                            # Handle transfer request asynchronously
+                            self._sender_executor.submit(
+                                self._sender_worker,
+                                identity,
+                                msg_bytes,
+                                backend_path,
+                            )
+                    except Exception as e:
+                        logger.error("Error decoding message: %s", e)
+                        # Fall back to treating as transfer request
+                        self._sender_executor.submit(
+                            self._sender_worker,
+                            identity,
+                            msg_bytes,
+                            backend_path,
+                        )
 
                 if backend in sockets:
                     identity, status = backend.recv_multipart()
@@ -507,6 +618,40 @@ class MooncakeECConnectorWorker:
         finally:
             frontend.close()
             backend.close()
+
+    def _handle_cache_check(
+        self, identity: bytes, request_bytes: bytes, frontend: zmq.Socket
+    ):
+        """Handle cache existence check request synchronously."""
+        try:
+            # Decode the request
+            request = self._cache_check_decoder.decode(request_bytes)
+            mm_hash = request.mm_hash
+            
+            # Check if cache exists in local_mm_addrs
+            exists = mm_hash in self.local_mm_addrs
+            num_encoder_tokens = 0
+            
+            if exists:
+                # We have the address, but we don't have num_encoder_tokens stored
+                # We could store it separately, or return 0 and let consumer figure it out
+                # For now, return 0 - consumer can get it from request if needed
+                logger.debug("Cache check: mm_hash %s exists", mm_hash)
+            else:
+                logger.debug("Cache check: mm_hash %s does not exist", mm_hash)
+            
+            response = MooncakeCacheCheckResponse(
+                exists=exists,
+                num_encoder_tokens=num_encoder_tokens,
+            )
+            response_bytes = self._cache_check_encoder.encode(response)
+            frontend.send_multipart((identity, b"", response_bytes))
+        except Exception as e:
+            logger.error("Error handling cache check: %s", e)
+            # Send error response
+            response = MooncakeCacheCheckResponse(exists=False, num_encoder_tokens=0)
+            response_bytes = self._cache_check_encoder.encode(response)
+            frontend.send_multipart((identity, b"", response_bytes))
 
     def _sender_worker(
         self, identity: bytes, metadata_bytes: bytes, worker_channel_path: str
