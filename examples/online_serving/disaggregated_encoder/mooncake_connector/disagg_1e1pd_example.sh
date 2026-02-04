@@ -12,7 +12,7 @@ mkdir -p $LOG_PATH
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
-PROXY_PORT="${PROXY_PORT:-10001}"
+PROXY_PORT="${PROXY_PORT:-10006}"
 
 GPU_E="${GPU_E:-6}"
 GPU_PD="${GPU_PD:-7}"
@@ -144,11 +144,11 @@ echo "All services are up!"
 vllm bench serve \
     --model $MODEL \
     --dataset-name random-mm \
-    --num-prompts 100 \
-    --random-input-len 150 \
+    --num-prompts $NUM_PROMPTS \
+    --random-input-len 400 \
     --random-output-len 100 \
     --random-range-ratio 0.0 \
-    --random-mm-base-items-per-request 1 \
+    --random-mm-base-items-per-request 3 \
     --random-mm-num-mm-items-range-ratio 0 \
     --random-mm-limit-mm-per-prompt '{"image":10,"video":0}' \
     --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
