@@ -145,6 +145,23 @@ class ECExampleConnector(ECConnectorBase):
         # Insert mm_hash only if this block has not been recorded yet.
         self._mm_datas_need_loads[mm_hash] = num_encoder_token
 
+    def maybe_update_remote_cache_state(self, encoder_cache, **kwargs) -> None:
+        metadata: ECExampleConnectorMetadata = self._get_connector_metadata()
+        assert isinstance(metadata, ECExampleConnectorMetadata)
+
+        for mm_data in metadata.mm_datas:
+            # make sure is producer, and mm_hash exist in local HBM encoder cache
+            if (not self.is_producer) or (mm_data.mm_hash not in encoder_cache):
+                continue
+
+            # Check if external storage doesn't have it but HBM does
+            if not self.has_cache_item(mm_data.mm_hash):
+                logger.debug(f"update_remote_cache_state for hash {mm_data.mm_hash}")
+                self.save_caches(
+                    encoder_cache=encoder_cache,
+                    mm_hash=mm_data.mm_hash,
+                )
+
     def build_connector_meta(
         self,
         scheduler_output: SchedulerOutput,

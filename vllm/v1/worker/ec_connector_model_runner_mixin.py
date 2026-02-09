@@ -81,5 +81,5 @@ class ECConnectorModelRunnerMixin:
             output.finished_sending, output.finished_recving = (
                 ec_connector.get_finished(scheduler_output.finished_req_ids)
             )
-
+            ec_connector.maybe_update_remote_cache_state(encoder_cache)
             ec_connector.clear_connector_metadata()
