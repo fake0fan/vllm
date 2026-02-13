@@ -1309,6 +1309,7 @@ class Scheduler(SchedulerInterface):
             new_token_ids = generated_token_ids
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
             kv_transfer_params = None
+            ec_transfer_params = None
             status_before_stop = request.status
 
             # Check for stop and update request status.
@@ -1331,7 +1332,7 @@ class Scheduler(SchedulerInterface):
                 finish_reason = request.get_finished_reason()
                 finished = self._handle_stopped_request(request)
                 if finished:
-                    kv_transfer_params = self._free_request(request)
+                    kv_transfer_params, ec_transfer_params = self._free_request(request)
 
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
@@ -1367,6 +1368,7 @@ class Scheduler(SchedulerInterface):
                 new_token_ids
                 or pooler_output is not None
                 or kv_transfer_params
+                or ec_transfer_params
                 or stopped
             ):
                 # Add EngineCoreOutput for this Request.
@@ -1381,6 +1383,7 @@ class Scheduler(SchedulerInterface):
                         stop_reason=request.stop_reason,
                         events=request.take_events(),
                         kv_transfer_params=kv_transfer_params,
+                        ec_transfer_params=ec_transfer_params,
                         trace_headers=request.trace_headers,
                         num_cached_tokens=request.num_cached_tokens,
                         routed_experts=routed_experts,
@@ -1677,10 +1680,14 @@ class Scheduler(SchedulerInterface):
             request.status = finished_status
             self._free_request(request)
 
-    def _free_request(self, request: Request) -> dict[str, Any] | None:
+    def _free_request(
+        self, request: Request
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         assert request.is_finished()
 
         delay_free_blocks, kv_xfer_params = self._connector_finished(request)
+        _, ec_xfer_params = self._ec_connector_finished(request)
+
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
         self.finished_req_ids.add(request_id)
@@ -1690,7 +1697,20 @@ class Scheduler(SchedulerInterface):
         if not delay_free_blocks:
             self._free_blocks(request)
 
-        return kv_xfer_params
+        return kv_xfer_params, ec_xfer_params
+
+    def _ec_connector_finished(
+        self, request: Request
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """
+        Invoke the EC connector request_finished() method if applicable.
+        Returns optional ec transfer parameters to be included with the
+        request outputs.
+        """
+        if self.ec_connector is None:
+            return False, None
+
+        return self.ec_connector.request_finished(request)
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
