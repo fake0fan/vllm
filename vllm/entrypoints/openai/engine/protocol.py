@@ -310,3 +310,7 @@ class GenerateRequest(BaseModel):
         default=None,
         description="KVTransfer parameters used for disaggregated serving.",
     )
+    ec_transfer_params: dict[str, Any] | None = Field(
+        default=None,
+        description="ECTransfer parameters used for disaggregated serving.",
+    )

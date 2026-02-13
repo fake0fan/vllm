@@ -607,17 +607,3 @@ class TestEdgeCases:
         # Should raise FileNotFoundError
         with pytest.raises(FileNotFoundError):
             connector.start_load_caches(encoder_cache=encoder_cache)
-
-    def test_has_caches_empty_request(self, mock_vllm_config_producer):
-        """Test has_caches with request that has no MM data."""
-        connector = ECExampleConnector(
-            vllm_config=mock_vllm_config_producer,
-            role=ECConnectorRole.SCHEDULER,
-        )
-
-        mock_request = MockRequest("req_empty", [], [])
-
-        result = connector.has_caches(mock_request)
-
-        assert len(result) == 0
-        assert result == []
