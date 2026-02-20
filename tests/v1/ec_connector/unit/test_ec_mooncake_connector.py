@@ -4,22 +4,16 @@
 Unit tests for MooncakeECConnector.
 """
 
-import threading
-import time
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import torch
-import zmq
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
 from vllm.distributed.ec_transfer.ec_connector.mooncake_connector import (
     MooncakeECConnector,
     MooncakeECConnectorMetadata,
-    MooncakeECConnectorScheduler,
-    MooncakeECConnectorWorker,
-    MMHashMeta,
 )
 from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -61,17 +55,20 @@ def mock_parallel_state():
     mock_group.rank = 0
     mock_group.local_rank = 0
     mock_group.world_size = 1
-    
-    with patch.multiple(
-        "vllm.distributed.parallel_state",
-        get_tensor_model_parallel_rank=MagicMock(return_value=0),
-        get_tensor_model_parallel_world_size=MagicMock(return_value=1),
-        get_tp_group=MagicMock(return_value=mock_group),
-    ), patch.multiple(
-        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector",
-        get_tensor_model_parallel_rank=MagicMock(return_value=0),
-        get_tensor_model_parallel_world_size=MagicMock(return_value=1),
-        get_tp_group=MagicMock(return_value=mock_group),
+
+    with (
+        patch.multiple(
+            "vllm.distributed.parallel_state",
+            get_tensor_model_parallel_rank=MagicMock(return_value=0),
+            get_tensor_model_parallel_world_size=MagicMock(return_value=1),
+            get_tp_group=MagicMock(return_value=mock_group),
+        ),
+        patch.multiple(
+            "vllm.distributed.ec_transfer.ec_connector.mooncake_connector",
+            get_tensor_model_parallel_rank=MagicMock(return_value=0),
+            get_tensor_model_parallel_world_size=MagicMock(return_value=1),
+            get_tp_group=MagicMock(return_value=mock_group),
+        ),
     ):
         yield mock_group
 
@@ -124,7 +121,7 @@ def mock_request_with_3_mm():
     request_id = "test_req_123"
     mm_hashes = ["img_hash_1", "img_hash_2", "img_hash_3"]
     token_counts = [100, 150, 200]
-    
+
     # Add ec_transfer_params with routing info
     ec_transfer_params = {}
     for mm_hash in mm_hashes:
@@ -142,10 +139,16 @@ def mock_request_with_3_mm():
 class TestMooncakeECConnectorBasics:
     """Test basic Mooncake EC connector functionality."""
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_initialization_producer(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_producer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_producer,
+        mock_parallel_state,
     ):
         """Test connector initializes correctly as producer."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -164,10 +167,16 @@ class TestMooncakeECConnectorBasics:
         assert connector.connector_scheduler is not None
         assert connector.connector_worker is None
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_initialization_consumer(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_parallel_state,
     ):
         """Test connector initializes correctly as consumer."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -186,10 +195,16 @@ class TestMooncakeECConnectorBasics:
         assert connector.connector_scheduler is not None
         assert connector.connector_worker is None
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_role_assignment(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_producer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_producer,
+        mock_parallel_state,
     ):
         """Test role is correctly assigned."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -214,10 +229,16 @@ class TestMooncakeECConnectorBasics:
 class TestCacheExistence:
     """Test cache existence checking using has_cache_item() API."""
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank"
+    )
     def test_has_cache_item_producer_returns_false(
         self,
         mock_tp_rank,
@@ -228,7 +249,7 @@ class TestCacheExistence:
         mock_request_with_3_mm,
         mock_parallel_state,
     ):
-        """Test has_cache_item returns False for producer (producer doesn't check remote)."""
+        """Test has_cache_item returns False for producer (no remote check)."""
         mock_get_ip.return_value = "127.0.0.1"
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0
@@ -243,13 +264,21 @@ class TestCacheExistence:
 
         # Producer should always return False
         for mm_feature in mock_request_with_3_mm.mm_features:
-            result = connector.has_cache_item(mm_feature.identifier, mock_request_with_3_mm)
+            result = connector.has_cache_item(
+                mm_feature.identifier, mock_request_with_3_mm
+            )
             assert not result, "Producer should not check remote cache"
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank"
+    )
     def test_has_cache_item_no_request(
         self,
         mock_tp_rank,
@@ -276,10 +305,16 @@ class TestCacheExistence:
         result = connector.has_cache_item("test_hash", None)
         assert not result
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank"
+    )
     def test_has_cache_item_no_ec_transfer_params(
         self,
         mock_tp_rank,
@@ -307,11 +342,19 @@ class TestCacheExistence:
         result = connector.has_cache_item("hash1", request)
         assert not result
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank")
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.msgspec.msgpack")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.msgspec.msgpack"
+    )
     def test_has_cache_item_probe_success(
         self,
         mock_msgpack,
@@ -347,7 +390,7 @@ class TestCacheExistence:
             role=ECConnectorRole.SCHEDULER,
         )
 
-        result = connector.has_cache_item("img_hash_1", mock_request_with_3_mm)
+        connector.has_cache_item("img_hash_1", mock_request_with_3_mm)
         # Should attempt probe (may return True if mocked correctly)
         # Note: This test verifies the probe path is called
 
@@ -355,10 +398,17 @@ class TestCacheExistence:
 class TestStateManagement:
     """Test connector state management."""
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_update_state_after_alloc_3_items(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_request_with_3_mm, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_request_with_3_mm,
+        mock_parallel_state,
     ):
         """Test state update after allocation for 3 MM items."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -382,10 +432,17 @@ class TestStateManagement:
         # Check state updated for all 3
         assert len(connector.connector_scheduler._mm_hashes_need_recv) == 3
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_build_connector_meta_3_items(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_request_with_3_mm, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_request_with_3_mm,
+        mock_parallel_state,
     ):
         """Test metadata building for 3 MM items."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -414,10 +471,16 @@ class TestStateManagement:
         # State should be cleared after building
         assert len(connector.connector_scheduler._mm_hashes_need_recv) == 0
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_build_connector_meta_empty(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_parallel_state,
     ):
         """Test metadata building with empty state."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -441,10 +504,17 @@ class TestStateManagement:
 class TestRequestFinished:
     """Test request_finished method."""
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_request_finished_producer_returns_params(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_producer, mock_request_with_3_mm, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_producer,
+        mock_request_with_3_mm,
+        mock_parallel_state,
     ):
         """Test request_finished returns params for producer."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -468,10 +538,17 @@ class TestRequestFinished:
         assert "img_hash_3" in params
         assert params["img_hash_1"]["do_remote_encode"] is True
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_request_finished_consumer_returns_none(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_request_with_3_mm, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_request_with_3_mm,
+        mock_parallel_state,
     ):
         """Test request_finished returns None for consumer."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -494,10 +571,16 @@ class TestRequestFinished:
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_has_cache_item_incomplete_routing_params(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_parallel_state,
     ):
         """Test has_cache_item handles incomplete routing params."""
         mock_get_ip.return_value = "127.0.0.1"
@@ -516,16 +599,24 @@ class TestEdgeCases:
             "test_req",
             ["hash1"],
             [100],
-            ec_transfer_params={"hash1": {"remote_host": "127.0.0.1"}},  # Missing remote_port
+            ec_transfer_params={
+                "hash1": {"remote_host": "127.0.0.1"}
+            },  # Missing remote_port
         )
 
         result = connector.has_cache_item("hash1", request)
         assert not result
 
-    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine")
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
     @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
     def test_update_state_after_alloc_no_ec_transfer_params(
-        self, mock_get_ip, mock_transfer_engine, mock_vllm_config_consumer, mock_parallel_state
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_vllm_config_consumer,
+        mock_parallel_state,
     ):
         """Test update_state_after_alloc handles missing ec_transfer_params."""
         mock_get_ip.return_value = "127.0.0.1"

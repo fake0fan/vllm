@@ -174,6 +174,7 @@ class ECConnectorBase(ABC):
         """
         pass
 
+    @abstractmethod
     def wait_for_load(self) -> None:
         """
         Wait until ec tensors are loaded before they are able to be gathered/used

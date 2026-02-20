@@ -87,6 +87,7 @@ class MooncakeCacheCheckRequest(
     dict=True,
 ):
     """Request to check if cache exists for mm_hash."""
+
     mm_hash: str
 
 
@@ -96,6 +97,7 @@ class MooncakeCacheCheckResponse(
     dict=True,
 ):
     """Response indicating cache existence."""
+
     exists: bool
     num_encoder_tokens: int  # 0 if not exists
 
@@ -182,7 +184,9 @@ class MooncakeECConnector(ECConnectorBase):
     ) -> ECConnectorMetadata:
         """Build connector metadata for this step."""
         assert self.connector_scheduler is not None
-        return self.connector_scheduler.build_connector_meta(scheduler_output, encoder_cache_manager)
+        return self.connector_scheduler.build_connector_meta(
+            scheduler_output, encoder_cache_manager
+        )
 
     def request_finished(
         self, request: "Request"
@@ -239,9 +243,7 @@ class MooncakeECConnector(ECConnectorBase):
         assert self.connector_worker is not None
         return self.connector_worker.get_finished(finished_req_ids)
 
-    def maybe_update_remote_cache_state(
-        self, encoder_cache, **kwargs
-    ) -> None:
+    def maybe_update_remote_cache_state(self, encoder_cache, **kwargs) -> None:
         """
         Maybe update the remote cache state based on the local encoder cache.
 
@@ -256,7 +258,9 @@ class MooncakeECConnector(ECConnectorBase):
         metadata: ECConnectorMetadata = self._get_connector_metadata()
         assert isinstance(metadata, MooncakeECConnectorMetadata)
 
-        return self.connector_worker.maybe_update_remote_cache_state(encoder_cache, metadata)
+        return self.connector_worker.maybe_update_remote_cache_state(
+            encoder_cache, metadata
+        )
 
 
 class MooncakeECConnectorScheduler:
@@ -272,12 +276,14 @@ class MooncakeECConnectorScheduler:
 
         # Track mm_hashes that need to be loaded from remote
         self._mm_hashes_need_recv: dict[Key, tuple[Request, int]] = {}
-        
+
         # ZMQ context for cache check probes (only on consumer side)
         if not self.is_producer:
             self._probe_zmq_ctx = zmq.Context()
             self._cache_check_request_encoder = msgspec.msgpack.Encoder()
-            self._cache_check_response_decoder = msgspec.msgpack.Decoder(MooncakeCacheCheckResponse)
+            self._cache_check_response_decoder = msgspec.msgpack.Decoder(
+                MooncakeCacheCheckResponse
+            )
         else:
             self._probe_zmq_ctx = None
             self._cache_check_request_encoder = None
@@ -288,7 +294,7 @@ class MooncakeECConnectorScheduler:
         identifier: str,
     ) -> bool:
         """Check if encoder cache exists remotely for a single mm item.
-        
+
         Uses real-time probe to query encoder instance directly, avoiding
         reliance on stale ec_transfer_params.
         """
@@ -298,66 +304,56 @@ class MooncakeECConnectorScheduler:
 
         remote_host = self.side_channel_host
         remote_port = self.side_channel_port
-        
+
         # Probe encoder instance for cache existence
         return self._probe_cache_existence(identifier, remote_host, remote_port)
-    
+
     def _probe_cache_existence(
         self, mm_hash: str, remote_host: str, remote_port: int
     ) -> bool:
         """Probe encoder instance to check if cache exists.
-        
+
         Returns True if cache exists, False otherwise.
         """
         from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
-        
+
         tp_rank = get_tensor_model_parallel_rank()
         path = make_zmq_path("tcp", remote_host, remote_port + tp_rank)
-        
+
         request = MooncakeCacheCheckRequest(mm_hash=mm_hash)
         request_bytes = self._cache_check_request_encoder.encode(request)
-        
+
         # Encode message as (msg_type, request)
         msg_bytes = msgspec.msgpack.encode((CHECK_CACHE_MSG, request_bytes))
-        
+
         try:
             sock = make_zmq_socket(
                 self._probe_zmq_ctx, path, zmq.REQ, bind=False, linger=0
             )
             sock.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
-            
+
             sock.send(msg_bytes)
             response_bytes = sock.recv()
-            
+
             # Decode response
             response = self._cache_check_response_decoder.decode(response_bytes)
-            
+
             sock.close()
-            
+
             logger.debug(
-                "Cache probe for mm_hash %s: exists=%s",
-                mm_hash,
-                response.exists
+                "Cache probe for mm_hash %s: exists=%s", mm_hash, response.exists
             )
-            
+
             return response.exists
-            
+
         except zmq.Again:
-            logger.warning(
-                "Cache probe timeout for mm_hash %s at %s",
-                mm_hash,
-                path
-            )
+            logger.warning("Cache probe timeout for mm_hash %s at %s", mm_hash, path)
             return False
         except Exception as e:
             logger.error(
-                "Cache probe failed for mm_hash %s at %s: %s",
-                mm_hash,
-                path,
-                e
+                "Cache probe failed for mm_hash %s at %s: %s", mm_hash, path, e
             )
             return False
-    
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         """Update state after encoder cache allocation."""
@@ -438,7 +434,7 @@ class MooncakeECConnectorScheduler:
 
             for mm_hash, num_token in scheduled_mm_hashes.items():
                 # Skip if already in metadata (from loading)
-                if any(k.mm_hash == mm_hash for k in meta.mm_hashes_to_recv.keys()):
+                if any(k.mm_hash == mm_hash for k in meta.mm_hashes_to_recv):
                     continue
 
                 # Check if external storage doesn't have it but HBM does
@@ -456,7 +452,7 @@ class MooncakeECConnectorScheduler:
                             mm_addr=0,
                         ),
                         remote_host="dummy2",
-                        remote_port="dummy3",
+                        remote_port=0,
                     )
                     logger.debug(
                         "Marking mm_hash %s for saving: HBM has cache but "
@@ -664,7 +660,7 @@ class MooncakeECConnectorWorker:
                         else:
                             msg_type = decoded
                             request_bytes = msg_bytes
-                        
+
                         if msg_type == CHECK_CACHE_MSG:
                             # Handle cache check synchronously (fast operation)
                             self._handle_cache_check(identity, request_bytes, frontend)
@@ -706,19 +702,19 @@ class MooncakeECConnectorWorker:
             # Decode the request
             request = self._cache_check_decoder.decode(request_bytes)
             mm_hash = request.mm_hash
-            
+
             # Check if cache exists in local_mm_addrs
             exists = mm_hash in self.local_mm_addrs
             num_encoder_tokens = 0
-            
+
             if exists:
                 # We have the address, but we don't have num_encoder_tokens stored
-                # We could store it separately, or return 0 and let consumer figure it out
-                # For now, return 0 - consumer can get it from request if needed
+                # We could store it separately, or return 0 and let consumer
+                # figure it out. For now, return 0.
                 logger.debug("Cache check: mm_hash %s exists", mm_hash)
             else:
                 logger.debug("Cache check: mm_hash %s does not exist", mm_hash)
-            
+
             response = MooncakeCacheCheckResponse(
                 exists=exists,
                 num_encoder_tokens=num_encoder_tokens,
@@ -1007,14 +1003,14 @@ class MooncakeECConnectorWorker:
     def maybe_update_remote_cache_state(
         self, encoder_cache, metadata: MooncakeECConnectorMetadata, **kwargs
     ) -> None:
-        for key in metadata.mm_hashes_to_recv.keys():
+        for key in metadata.mm_hashes_to_recv:
             # make sure is producer, and mm_hash exist in local HBM encoder cache
             if (not self.is_producer) or (key.mm_hash not in encoder_cache):
                 continue
 
             # Check if external storage doesn't have it but HBM does
             if not self.has_cache_item(key.mm_hash):
-                logger.debug(f"update_remote_cache_state for hash {key.mm_hash}")
+                logger.debug("update_remote_cache_state for hash %s", key.mm_hash)
                 self.save_caches(
                     encoder_cache=encoder_cache,
                     mm_hash=key.mm_hash,
