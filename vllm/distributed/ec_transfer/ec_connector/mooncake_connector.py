@@ -449,6 +449,9 @@ class MooncakeECConnectorScheduler:
                     continue
 
                 # Check if external storage doesn't have it but HBM does
+                # NOTE: This has_cache_item gate ensures we never save the same
+                # mm_hash twice while an external copy still exists in the
+                # tensor pool.
                 if not self.has_cache_item(mm_hash) and encoder_cache_manager.has_cache(
                     mm_hash
                 ):
@@ -561,8 +564,12 @@ class MooncakeECConnectorWorker:
         self.byte_per_token = self.embed_size * dtype_size
         self.device_type = current_platform.device_type
 
-        # stored addr of mm tensor in registered caches
+        # stored addr of mm tensor in registered caches (external tensor pool)
         self.local_mm_addrs: dict[MMHash, int] = {}
+        # reverse map for pool eviction callback: addr -> mm_hash
+        self._addr_to_mm_hash: dict[int, MMHash] = {}
+        # Lock protecting both maps above; used by save/send/evict paths.
+        self._mm_lock = threading.Lock()
 
         self.num_workers = int(
             vllm_config.ec_transfer_config.ec_connector_extra_config.get(
@@ -625,7 +632,19 @@ class MooncakeECConnectorWorker:
         self, encoder_cache: dict[str, torch.Tensor], mm_hash: str, **kwargs
     ) -> None:
         addr = self.transfer_buffer.store_tensor(encoder_cache[mm_hash])
-        self.local_mm_addrs[mm_hash] = addr
+        # Update bookkeeping for this mm_hash. We intentionally do this
+        # after store_tensor returns to avoid deadlock if the pool evicts
+        # internally and calls back into _on_pool_free.
+        with self._mm_lock:
+            self.local_mm_addrs[mm_hash] = addr
+            self._addr_to_mm_hash[addr] = mm_hash
+
+    def _on_pool_free(self, addr: int) -> None:
+        """Called by the tensor pool when a block is freed (evict or explicit free)."""
+        with self._mm_lock:
+            mm_hash = self._addr_to_mm_hash.pop(addr, None)
+            if mm_hash is not None:
+                self.local_mm_addrs.pop(mm_hash, None)
 
     def _receiver_loop(self, loop: asyncio.AbstractEventLoop):
         asyncio.set_event_loop(loop)
@@ -709,8 +728,8 @@ class MooncakeECConnectorWorker:
             request = self._cache_check_decoder.decode(request_bytes)
             mm_hash = request.mm_hash
 
-            # Check if cache exists in local_mm_addrs
-            exists = mm_hash in self.local_mm_addrs
+            # Check if cache exists in local_mm_addrs (external tensor pool)
+            exists = self.has_cache_item(mm_hash)
             num_encoder_tokens = 0
 
             if exists:
@@ -785,7 +804,15 @@ class MooncakeECConnectorWorker:
             if remote_token_byte == 0:
                 continue
 
-            src_ptrs.append(self.local_mm_addrs[mm_hash])
+            with self._mm_lock:
+                addr = self.local_mm_addrs.get(mm_hash)
+            if addr is None:
+                logger.debug(
+                    "Skipping send for mm_hash %s: no entry in local_mm_addrs", mm_hash
+                )
+                continue
+
+            src_ptrs.append(addr)
             dst_ptrs.append(remote_mm_addr)
             lengths.append(remote_token_byte)
 
@@ -812,6 +839,8 @@ class MooncakeECConnectorWorker:
     def register_encoder_cache(self, transfer_buffer: TensorMemoryPool):
         """Register the EC Cache data in mooncake."""
         self.transfer_buffer = transfer_buffer
+        # Keep local_mm_addrs in sync when the pool evicts (auto_evict or free).
+        transfer_buffer.on_free = self._on_pool_free
         ret_value = self.engine.register_memory(
             transfer_buffer.base_address, transfer_buffer.max_block_size
         )
@@ -1004,7 +1033,8 @@ class MooncakeECConnectorWorker:
         identifier: str,
     ) -> bool:
         """WORKER to check if encoder cache exists remotely for a single mm item."""
-        return identifier in self.local_mm_addrs
+        with self._mm_lock:
+            return identifier in self.local_mm_addrs
 
     def maybe_update_remote_cache_state(
         self, encoder_cache, metadata: MooncakeECConnectorMetadata, **kwargs

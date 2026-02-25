@@ -5,6 +5,7 @@ import atexit
 import ctypes
 import math
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -87,6 +88,9 @@ class TensorMemoryPool:
 
         self.free_lists: dict[int, dict[int, MemoryBlock]] = {}
         self.allocated_blocks: OrderedDict[int, MemoryBlock] = OrderedDict()
+        # Optional callback invoked when a block is freed (addr passed). Used
+        # e.g. by EC connector to keep local_mm_addrs in sync with auto-evict.
+        self.on_free: Callable[[int], None] | None = None
 
         self._initialize_free_lists()
         self._allocate_memory()
@@ -173,18 +177,23 @@ class TensorMemoryPool:
 
             self.free_lists[buddy_size][buddy.addr] = buddy
 
-    def free(self, addr: int | None = None):
+    def free(self, addr: int | None = None) -> int:
         """Frees an allocated memory block.
 
         Args:
-            addr (int): Address of the block to free
+            addr (int | None): Address of the block to free. If None and
+                auto_evict is True, frees the oldest allocated block (LRU).
+
+        Returns:
+            int: The address that was freed.
 
         Raises:
-            ValueError: If address is invalid or not allocated
+            ValueError: If address is invalid or not allocated, or no block
+                to free when addr is None.
         """
         if not addr:
             if self.allocated_blocks:
-                # Retrieve the earliest inserted key
+                # Retrieve the earliest inserted key (LRU)
                 addr = next(iter(self.allocated_blocks))
             else:
                 raise ValueError("No available block to free")
@@ -193,7 +202,12 @@ class TensorMemoryPool:
             raise ValueError("Invalid address to free")
 
         block = self.allocated_blocks.pop(addr)
+
+        # Callback function to update info on evicted items
+        if self.on_free is not None:
+            self.on_free(addr)
         self._merge_buddies(block)
+        return addr
 
     def _merge_buddies(self, block: MemoryBlock):
         MAX_MERGE_DEPTH = 30
