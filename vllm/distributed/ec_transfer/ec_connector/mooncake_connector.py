@@ -124,6 +124,9 @@ class FinishedReceiveMMHashSet:
 class MooncakeECConnectorMetadata(ECConnectorMetadata):
     def __init__(self):
         self.mm_hashes_to_recv: dict[Key, RecvMMHashMeta] = {}
+        # mm_hashes whose encoder cache should be saved from HBM to external
+        # storage on the producer side.
+        self.mm_hashes_to_save: dict[MMHash, MMHashMeta] = {}
 
     def add_recv_req(
         self,
@@ -139,6 +142,14 @@ class MooncakeECConnectorMetadata(ECConnectorMetadata):
             remote_host=remote_host,
             remote_port=remote_port,
         )
+
+    def add_save_req(
+        self,
+        mm_hash: MMHash,
+        mm_hash_meta: MMHashMeta,
+    ) -> None:
+        """Add a request to save encoder cache to external storage."""
+        self.mm_hashes_to_save[mm_hash] = mm_hash_meta
 
 
 class MooncakeECConnector(ECConnectorBase):
@@ -442,17 +453,12 @@ class MooncakeECConnectorScheduler:
                     mm_hash
                 ):
                     # HBM has but external doesn't - mark for saving
-                    # meta.add_mm_data(MMMeta.make_meta(mm_hash, num_token))
-                    # TODO: refactor / rename function name: below is to be saved!!
-                    meta.add_recv_req(
-                        req_id="dummy1",
+                    meta.add_save_req(
                         mm_hash=mm_hash,
                         mm_hash_meta=MMHashMeta(
                             num_encoder_tokens=num_token,
                             mm_addr=0,
                         ),
-                        remote_host="dummy2",
-                        remote_port=0,
                     )
                     logger.debug(
                         "Marking mm_hash %s for saving: HBM has cache but "
@@ -1003,17 +1009,17 @@ class MooncakeECConnectorWorker:
     def maybe_update_remote_cache_state(
         self, encoder_cache, metadata: MooncakeECConnectorMetadata, **kwargs
     ) -> None:
-        for key in metadata.mm_hashes_to_recv:
+        for mm_hash in metadata.mm_hashes_to_save:
             # make sure is producer, and mm_hash exist in local HBM encoder cache
-            if (not self.is_producer) or (key.mm_hash not in encoder_cache):
+            if (not self.is_producer) or (mm_hash not in encoder_cache):
                 continue
 
             # Check if external storage doesn't have it but HBM does
-            if not self.has_cache_item(key.mm_hash):
-                logger.debug("update_remote_cache_state for hash %s", key.mm_hash)
+            if not self.has_cache_item(mm_hash):
+                logger.debug("update_remote_cache_state for hash %s", mm_hash)
                 self.save_caches(
                     encoder_cache=encoder_cache,
-                    mm_hash=key.mm_hash,
+                    mm_hash=mm_hash,
                 )
 
 
