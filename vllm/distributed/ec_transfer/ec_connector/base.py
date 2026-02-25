@@ -111,16 +111,15 @@ class ECConnectorBase(ABC):
         assert self._connector_metadata is not None
         return self._connector_metadata
 
-    def register_caches(
+    def register_encoder_cache(
         self,
-        ec_caches: dict[str, torch.Tensor],
+        ec_cache: Any,
     ):
         """
-        Initialize with the EC caches.
+        Initialize and register EC cache.
         Args:
-            ec_caches: dictionary of encoder cache
+            ec_cache
         """
-        # TODO: Implement this later for P2P feature
         return
 
     @abstractmethod
@@ -156,6 +155,29 @@ class ECConnectorBase(ABC):
                 data hashes (`mm_hash`) to encoder cache tensors.
             mm_hash (str): The hash of the multimodal data whose cache is being saved.
             kwargs (dict): Additional keyword arguments for the connector.
+        """
+        pass
+
+    @abstractmethod
+    def maybe_update_remote_cache_state(
+        self, encoder_cache: dict[str, torch.Tensor]
+    ) -> None:
+        """
+        Maybe update the remote cache state based on the local encoder cache.
+
+        This method can be used to synchronize or update the state of the
+        remote cache based on changes in the local encoder cache.
+
+        Args:
+            encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal
+                data hashes (`mm_hash`) to encoder cache tensors.
+        """
+        pass
+
+    @abstractmethod
+    def wait_for_load(self) -> None:
+        """
+        Wait until ec tensors are loaded before they are able to be gathered/used
         """
         pass
 
@@ -210,7 +232,9 @@ class ECConnectorBase(ABC):
 
     @abstractmethod
     def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
+        self,
+        scheduler_output: SchedulerOutput,
+        encoder_cache_manager: Any = None,
     ) -> ECConnectorMetadata:
         """
         Build the connector metadata for this step.
@@ -220,6 +244,9 @@ class ECConnectorBase(ABC):
 
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
+            encoder_cache_manager (EncoderCacheManager, optional): the encoder
+                cache manager to check HBM cache status. Used to determine
+                which caches need to be saved to external storage.
         """
         pass
 
