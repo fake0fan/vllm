@@ -113,7 +113,7 @@ class TestSchedulerEncoderInputLogic:
 
     def test_hbm_cache_hit_skips_scheduling(self):
         """
-        Test that when HBM has cache, scheduler skips scheduling.
+        Test that when EncoderCacheManager has cache, scheduler skips scheduling.
         The connector handles external storage sync separately.
         """
         from vllm.v1.core.sched.scheduler import Scheduler
@@ -150,13 +150,13 @@ class TestSchedulerEncoderInputLogic:
             external_load_encoder_input,
         ) = result
 
-        # Verify all lists are empty (skipped because HBM has it)
+        # Verify all lists are empty (skipped because EncoderCacheManager has it)
         assert len(encoder_inputs_to_schedule) == 0
         assert len(external_load_encoder_input) == 0
 
     def test_external_cache_hit_schedules_load(self):
         """
-        Test that when external storage has cache but HBM doesn't,
+        Test that when external storage has cache but EncoderCacheManager doesn't,
         scheduler marks it for loading.
         """
         from vllm.v1.core.sched.scheduler import Scheduler
@@ -208,7 +208,7 @@ class TestSchedulerEncoderInputLogic:
 
     def test_no_cache_schedules_compute(self):
         """
-        Test that when neither HBM nor external has cache,
+        Test that when neither EncoderCacheManager nor external has cache,
         scheduler marks it for computation.
         """
         from vllm.v1.core.sched.scheduler import Scheduler

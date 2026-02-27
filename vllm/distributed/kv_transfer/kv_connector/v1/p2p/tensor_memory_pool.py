@@ -4,8 +4,6 @@
 import atexit
 import ctypes
 import math
-from collections import OrderedDict
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -59,41 +57,26 @@ class TensorMemoryPool:
         max_block_size (int): Maximum size of memory blocks to manage
         min_block_size (int, optional): Minimum size of memory blocks
             to manage. Defaults to 512.
-        device_type (str, optional): Type of memory pool - 'cpu' for pinned
-            host memory or 'cuda' for GPU memory. Defaults to 'cpu'.
 
     Raises:
         ValueError: If block sizes are invalid or max_block_size is less
             than min_block_size
     """
 
-    def __init__(
-        self,
-        max_block_size: int,
-        min_block_size: int = 512,
-        device_type: str = "cpu",
-        auto_evict: bool = False,
-    ):
+    def __init__(self, max_block_size: int, min_block_size: int = 512):
         if max_block_size <= 0 or min_block_size <= 0:
             raise ValueError("Block sizes must be positive")
         if max_block_size < min_block_size:
             raise ValueError("Max block size must be greater than min block size")
-        if device_type not in ["cpu", "cuda"]:
-            raise ValueError("device_type must be 'cpu' or 'cuda'")
 
         self.max_block_size = self._round_to_power_of_two(max_block_size)
         self.min_block_size = self._round_to_power_of_two(min_block_size)
-        self.device_type = device_type
-        self.auto_evict = auto_evict
 
         self.free_lists: dict[int, dict[int, MemoryBlock]] = {}
-        self.allocated_blocks: OrderedDict[int, MemoryBlock] = OrderedDict()
-        # Optional callback invoked when a block is freed (addr passed). Used
-        # e.g. by EC connector to keep local_mm_addrs in sync with auto-evict.
-        self.on_free: Callable[[int], None] | None = None
+        self.allocated_blocks: dict[int, MemoryBlock] = {}
 
         self._initialize_free_lists()
-        self._allocate_memory()
+        self._allocate_pinned_memory()
 
         atexit.register(self.cleanup)
 
@@ -106,38 +89,19 @@ class TensorMemoryPool:
             self.free_lists[size] = {}
             size //= 2
 
-    def _allocate_memory(self):
-        if self.device_type == "cpu":
-            self.base_tensor = torch.empty(
-                self.max_block_size // 4, dtype=torch.float32, pin_memory=True
-            )
-        else:  # cuda
-            self.base_tensor = torch.empty(
-                self.max_block_size // 4, dtype=torch.float32, device="cuda"
-            ).contiguous()
-
+    def _allocate_pinned_memory(self):
+        self.base_tensor = torch.empty(
+            self.max_block_size // 4, dtype=torch.float32, pin_memory=True
+        )
         self.base_address = self.base_tensor.data_ptr()
         initial_block = MemoryBlock(size=self.max_block_size, addr=self.base_address)
         self.free_lists[self.max_block_size][initial_block.addr] = initial_block
 
         logger.debug(
-            "TensorMemoryPool, device_type:%s, base_address:%d, max_block_size:%d",
-            self.device_type,
+            "TensorMemoryPool, base_address:%d, max_block_size:%d",
             self.base_address,
             self.max_block_size,
         )
-
-    def _allocate(self, required_size: int) -> int:
-        current_size = required_size
-        while current_size <= self.max_block_size:
-            if self.free_lists[current_size]:
-                _, block = self.free_lists[current_size].popitem()
-                self._split_block(block, required_size)
-                self.allocated_blocks[block.addr] = block
-                return block.addr
-            current_size *= 2
-
-        raise ValueError("Insufficient memory")
 
     def allocate(self, size: int) -> int:
         """Allocates a memory block of at least the requested size.
@@ -158,14 +122,16 @@ class TensorMemoryPool:
         if required_size > self.max_block_size:
             raise ValueError("Requested size exceeds maximum block size")
 
-        while True:
-            try:
-                return self._allocate(required_size)
-            except ValueError:
-                if self.auto_evict:
-                    self.free()
-                else:
-                    raise
+        current_size = required_size
+        while current_size <= self.max_block_size:
+            if self.free_lists[current_size]:
+                _, block = self.free_lists[current_size].popitem()
+                self._split_block(block, required_size)
+                self.allocated_blocks[block.addr] = block
+                return block.addr
+            current_size *= 2
+
+        raise ValueError("Insufficient memory")
 
     def _split_block(self, block: MemoryBlock, required_size: int):
         while block.size > required_size and block.size // 2 >= self.min_block_size:
@@ -177,37 +143,20 @@ class TensorMemoryPool:
 
             self.free_lists[buddy_size][buddy.addr] = buddy
 
-    def free(self, addr: int | None = None) -> int:
+    def free(self, addr: int):
         """Frees an allocated memory block.
 
         Args:
-            addr (int | None): Address of the block to free. If None and
-                auto_evict is True, frees the oldest allocated block (LRU).
-
-        Returns:
-            int: The address that was freed.
+            addr (int): Address of the block to free
 
         Raises:
-            ValueError: If address is invalid or not allocated, or no block
-                to free when addr is None.
+            ValueError: If address is invalid or not allocated
         """
-        if not addr:
-            if self.allocated_blocks:
-                # Retrieve the earliest inserted key (LRU)
-                addr = next(iter(self.allocated_blocks))
-            else:
-                raise ValueError("No available block to free")
-
         if addr not in self.allocated_blocks:
             raise ValueError("Invalid address to free")
 
         block = self.allocated_blocks.pop(addr)
-
-        # Callback function to update info on evicted items
-        if self.on_free is not None:
-            self.on_free(addr)
         self._merge_buddies(block)
-        return addr
 
     def _merge_buddies(self, block: MemoryBlock):
         MAX_MERGE_DEPTH = 30
@@ -232,16 +181,16 @@ class TensorMemoryPool:
         self.free_lists[block.size][block.addr] = block
 
     def store_tensor(self, tensor: torch.Tensor) -> int:
-        """Stores a tensor in the memory pool.
+        """Stores a CUDA tensor in pinned host memory.
 
         Args:
-            tensor (torch.Tensor): Tensor to store (CUDA for both CPU and GPU pools)
+            tensor (torch.Tensor): CUDA tensor to store
 
         Returns:
             int: Address where the tensor is stored
 
         Raises:
-            ValueError: If tensor device is incompatible or allocation fails
+            ValueError: If tensor is not on CUDA or allocation fails
         """
         if not tensor.is_cuda:
             raise ValueError("Only CUDA tensors can be stored")
@@ -259,14 +208,14 @@ class TensorMemoryPool:
 
         try:
             buffer = (ctypes.c_byte * block.size).from_address(block.addr)
-            pool_tensor = torch.frombuffer(
+            cpu_tensor = torch.frombuffer(
                 buffer, dtype=tensor.dtype, count=tensor.numel()
             ).reshape(tensor.shape)
         except ValueError as err:
             self.free(addr)
             raise ValueError(f"Failed to create tensor view: {err}") from err
 
-        pool_tensor.copy_(tensor)
+        cpu_tensor.copy_(tensor)
 
         return addr
 
@@ -275,26 +224,21 @@ class TensorMemoryPool:
         addr: int,
         dtype: torch.dtype,
         shape: tuple[int, ...],
-        device: torch.device = None,
-        copy: bool = True,
+        device: torch.device,
     ) -> torch.Tensor:
-        """Loads a tensor from the memory pool.
+        """Loads a tensor from pinned host memory to the specified device.
 
         Args:
             addr (int): Address where tensor is stored
             dtype (torch.dtype): Data type of the tensor
             shape (tuple[int, ...]): Shape of the tensor
-            device (torch.device, optional): Target device for the loaded tensor.
-                Required if copy=True, ignored if copy=False.
-            copy (bool, optional): If True, copies tensor to device. If False,
-                returns a view at the stored address. Defaults to True.
+            device: Target device for the loaded tensor
 
         Returns:
-            torch.Tensor: The loaded tensor (copied to device or view at address)
+            torch.Tensor: The loaded tensor on the specified device
 
         Raises:
-            ValueError: If address is invalid, sizes don't match, or device not
-                specified when copy=True
+            ValueError: If address is invalid or sizes don't match
         """
         if addr not in self.allocated_blocks:
             raise ValueError("Invalid address to load")
@@ -308,17 +252,15 @@ class TensorMemoryPool:
             raise ValueError("Requested tensor size exceeds block size")
 
         buffer = (ctypes.c_byte * block.size).from_address(block.addr)
-        pool_tensor = torch.frombuffer(buffer, dtype=dtype, count=num_elements).reshape(
+        cpu_tensor = torch.frombuffer(buffer, dtype=dtype, count=num_elements).reshape(
             shape
         )
 
-        if not copy:
-            return pool_tensor
+        cuda_tensor = torch.empty(shape, dtype=dtype, device=device)
 
-        target_tensor = torch.empty(shape, dtype=dtype, device=device)
-        target_tensor.copy_(pool_tensor)
+        cuda_tensor.copy_(cpu_tensor)
 
-        return target_tensor
+        return cuda_tensor
 
     def cleanup(self):
         """Cleans up all memory resources and resets the pool state."""
