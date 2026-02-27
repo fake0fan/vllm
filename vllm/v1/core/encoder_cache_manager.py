@@ -206,13 +206,14 @@ class EncoderCacheManager:
         self.num_freeable_slots -= num_encoder_embeds
 
     def has_cache(self, mm_hash: str) -> bool:
-        """Check if encoder cache exists in HBM for given mm_hash.
+        """Check if encoder cache exists in EncoderCacheManager for given mm_hash.
 
         Args:
             mm_hash: Multimodal data hash identifier
 
         Returns:
-            True if cache exists in HBM (even if not currently referenced)
+            True if cache exists in EncoderCacheManager (even if not
+            currently referenced)
         """
         return mm_hash in self.cached
 

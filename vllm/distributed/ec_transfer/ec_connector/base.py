@@ -245,8 +245,9 @@ class ECConnectorBase(ABC):
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
             encoder_cache_manager (EncoderCacheManager, optional): the encoder
-                cache manager to check HBM cache status. Used to determine
-                which caches need to be saved to external storage.
+                cache manager to check EncodeCacheManager cache status.
+                Used to determine which caches need to be saved to
+                external storage.
         """
         pass
 

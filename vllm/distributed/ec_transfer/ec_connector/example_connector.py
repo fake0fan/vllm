@@ -153,13 +153,18 @@ class ECExampleConnector(ECConnectorBase):
         assert isinstance(metadata, ECExampleConnectorMetadata)
 
         for mm_data in metadata.mm_datas:
-            # make sure is producer, and mm_hash exist in local HBM encoder cache
+            # make sure is producer, and mm_hash exists in local
+            # EncodeCacheManager encoder cache
             if (not self.is_producer) or (mm_data.mm_hash not in encoder_cache):
                 continue
 
-            # Check if external storage doesn't have it but HBM does
+            # Check if external storage doesn't have it but EncodeCacheManager
+            # does
             if not self.has_cache_item(mm_data.mm_hash):
-                logger.debug("update_remote_cache_state for hash %s", mm_data.mm_hash)
+                logger.debug(
+                    "update_remote_cache_state for hash %s",
+                    mm_data.mm_hash,
+                )
                 self.save_caches(
                     encoder_cache=encoder_cache,
                     mm_hash=mm_data.mm_hash,
@@ -178,12 +183,12 @@ class ECExampleConnector(ECConnectorBase):
         This builds metadata for both loading and saving:
         1. Items in _mm_datas_need_loads are marked for loading
         2. For producer role: checks all scheduled encoder inputs and marks
-           for saving if HBM has cache but external storage doesn't
+           for saving if EncodeCacheManager has cache but external storage doesn't
 
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
             encoder_cache_manager (EncoderCacheManager, optional): the encoder
-                cache manager to check HBM cache status.
+                cache manager to check EncoderCacheManager cache status.
         """
         meta = ECExampleConnectorMetadata()
 
@@ -192,8 +197,8 @@ class ECExampleConnector(ECConnectorBase):
             meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
         self._mm_datas_need_loads.clear()
 
-        # 2. Check if any HBM-cached items need to be saved to external storage
-        # Only producer needs to save
+        # 2. Check if any EncoderCacheManager-cached items need to be saved to
+        # external storage. Only producer needs to save.
         if self.is_producer and encoder_cache_manager is not None:
             scheduled_mm_hashes = self._collect_scheduled_mm_hashes(scheduler_output)
 
@@ -202,15 +207,17 @@ class ECExampleConnector(ECConnectorBase):
                 if any(m.mm_hash == mm_hash for m in meta.mm_datas):
                     continue
 
-                # Check if external storage doesn't have it but HBM does
+                # Check if external storage doesn't have it but
+                # EncoderCacheManager does
                 if not self.has_cache_item(mm_hash) and encoder_cache_manager.has_cache(
                     mm_hash
                 ):
-                    # HBM has but external doesn't - mark for saving
+                    # EncodeCacheManager has but external doesn't - mark for
+                    # saving
                     meta.add_mm_data(MMMeta.make_meta(mm_hash, num_token))
                     logger.debug(
-                        "Marking mm_hash %s for saving: HBM has cache but "
-                        "external storage doesn't",
+                        "Marking mm_hash %s for saving: EncodeCacheManager "
+                        "has cache but external storage doesn't",
                         mm_hash,
                     )
 

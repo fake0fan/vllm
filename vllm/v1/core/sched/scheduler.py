@@ -767,6 +767,16 @@ class Scheduler(SchedulerInterface):
                 # Count the number of prefix cached tokens.
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
+
+                logger.info("[Scheduler] request.request_id: %s", request.request_id)
+                logger.info(
+                    "[Scheduler] encoder_inputs_to_schedule: %s",
+                    encoder_inputs_to_schedule,
+                )
+                logger.info(
+                    "[Scheduler] external_load_encoder_input: %s",
+                    external_load_encoder_input,
+                )
                 # Encoder-related.
                 if encoder_inputs_to_schedule:
                     scheduled_encoder_inputs[request.request_id] = (
@@ -1122,7 +1132,8 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
-                    # The encoder input is already computed and cached in HBM.
+                    # The encoder input is already computed and cached in
+                    # EncodeCacheManager.
                     # Skip it - the EC connector will handle saving to external
                     # storage if needed in build_connector_meta().
                     continue

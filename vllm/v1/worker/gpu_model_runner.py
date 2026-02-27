@@ -35,9 +35,6 @@ from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
-from vllm.distributed.kv_transfer.kv_connector.v1.p2p.tensor_memory_pool import (
-    TensorMemoryPool,
-)
 from vllm.distributed.parallel_state import (
     get_dcp_group,
     get_pp_group,
@@ -705,18 +702,6 @@ class GPUModelRunner(
                     device="cpu",
                     pin_memory=self.pin_memory,
                 )
-
-        if has_ec_transfer():
-            assert vllm_config.ec_transfer_config is not None
-            max_block_size = int(
-                vllm_config.ec_transfer_config.ec_connector_extra_config.get(
-                    "transfer_buffer_size", 1073741824
-                )
-            )
-            self.transfer_pool = TensorMemoryPool(
-                max_block_size=max_block_size, device_type="cuda", auto_evict=True
-            )
-            get_ec_transfer().register_encoder_cache(self.transfer_pool)
 
         # Ephemeral state transferred between execute_model() and sample_tokens().
         self.execute_model_state: ExecuteModelState | None = None
@@ -2452,7 +2437,7 @@ class GPUModelRunner(
         # Cache the encoder outputs by mm_hash
         for mm_hash, output in zip(mm_hashes, encoder_outputs):
             self.encoder_cache[mm_hash] = output
-            logger.debug("Finish execute for mm hash %s", mm_hash)
+            logger.info("[GPU Model Runner] Finish execute for mm hash %s", mm_hash)
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         return encoder_outputs
