@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import asyncio
 import threading
-import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -305,15 +304,9 @@ class MooncakeECConnectorScheduler:
 
         Request info (host, port) is a must for consumer to find cache
         """
-        logger.info(
-            "[EC_SCHEDULER] has_cache_item called for mm_hash=%s, is_producer=%s",
-            identifier[:16],
-            self.is_producer,
-        )
 
         if self.is_producer:
             # Producer doesn't check remote cache
-            logger.debug("[EC_SCHEDULER] Producer node, skipping remote cache check")
             return False
 
         try:
@@ -321,28 +314,15 @@ class MooncakeECConnectorScheduler:
             mm_hash_params = ec_transfer_params.get(identifier, {})
             remote_host = mm_hash_params.get("remote_host")
             remote_port = mm_hash_params.get("remote_port")
-            
+
             if not remote_host or not remote_port:
-                logger.error("Missing remote_host or remote_port for hash: %s", identifier)
                 return False
         except Exception as e:
-            logger.error("Unable to get remote host and port. Error: %s", e)
+            logger.error("Unable to get remote host and port: %s", e)
             return False
-
-        logger.info(
-            "[EC_SCHEDULER] Probing encoder at %s:%d for mm_hash=%s",
-            remote_host,
-            remote_port,
-            identifier[:16],
-        )
 
         # Probe encoder instance for cache existence
         result = self._probe_cache_existence(identifier, remote_host, remote_port)
-        logger.info(
-            "[EC_SCHEDULER] Probe result for mm_hash=%s: exists=%s",
-            identifier[:16],
-            result,
-        )
         return result
 
     def _probe_cache_existence(
@@ -357,22 +337,11 @@ class MooncakeECConnectorScheduler:
         tp_rank = get_tensor_model_parallel_rank()
         path = make_zmq_path("tcp", remote_host, remote_port + tp_rank)
 
-        logger.info(
-            "[EC_PROBE] Starting cache probe: mm_hash=%s, path=%s, tp_rank=%d",
-            mm_hash[:16],
-            path,
-            tp_rank,
-        )
-
         request = MooncakeCacheCheckRequest(mm_hash=mm_hash)
         request_bytes = self._cache_check_request_encoder.encode(request)
 
         # Encode message as (msg_type, request)
         msg_bytes = msgspec.msgpack.encode((CHECK_CACHE_MSG, request_bytes))
-
-        logger.debug(
-            "[EC_PROBE] Sending CHECK_CACHE_MSG: msg_size=%d bytes", len(msg_bytes)
-        )
 
         try:
             sock = make_zmq_socket(
@@ -380,84 +349,36 @@ class MooncakeECConnectorScheduler:
             )
             sock.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
 
-            send_start = time.perf_counter()
             sock.send(msg_bytes)
-            logger.debug("[EC_PROBE] Message sent, waiting for response...")
 
             response_bytes = sock.recv()
-            rtt = (time.perf_counter() - send_start) * 1000  # ms
 
             # Decode response
             response = self._cache_check_response_decoder.decode(response_bytes)
 
             sock.close()
-
-            logger.info(
-                "[EC_PROBE] ✓ Cache probe SUCCESS: mm_hash=%s, exists=%s, "
-                "num_tokens=%d, rtt=%.2fms",
-                mm_hash[:16],
-                response.exists,
-                response.num_encoder_tokens,
-                rtt,
-            )
-
             return response.exists
 
         except zmq.Again:
-            logger.warning(
-                "[EC_PROBE] ✗ Cache probe TIMEOUT (5s) for mm_hash=%s at %s",
-                mm_hash[:16],
-                path,
-            )
+            logger.error("[EC_PROBE] Cache probe timed out after 5 seconds")
             return False
         except Exception as e:
-            logger.exception(
-                "[EC_PROBE] ✗ Cache probe FAILED for mm_hash=%s at %s: %s",
-                mm_hash[:16],
-                path,
-                e,
-            )
+            logger.error("[EC_PROBE] Error probing cache existence: %s", e)
             return False
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         """Update state after encoder cache allocation."""
         ec_transfer_params = getattr(request, "ec_transfer_params", None)
         if not ec_transfer_params:
-            logger.debug(
-                "[EC_SCHEDULER] No ec_transfer_params for request %s, skipping",
-                request.request_id[:16],
-            )
             return
 
         mm_hash = request.mm_features[index].identifier
-
-        logger.info(
-            "[EC_SCHEDULER] update_state_after_alloc: req_id=%s, mm_hash=%s, index=%d",
-            request.request_id[:16],
-            mm_hash[:16],
-            index,
-        )
 
         # ec_transfer_params is now a dict keyed by mm_hash: {mm_hash: {...}}
         # Extract params for this specific mm_hash
         mm_hash_params = ec_transfer_params.get(mm_hash)
         if not mm_hash_params:
-            logger.debug(
-                "[EC_SCHEDULER] No ec_transfer_params found for mm_hash %s in "
-                "request %s",
-                mm_hash[:16],
-                request.request_id[:16],
-            )
             return
-
-        logger.info(
-            "[EC_SCHEDULER] ec_transfer_params for mm_hash=%s: do_remote_encode=%s, "
-            "remote_host=%s, remote_port=%s",
-            mm_hash[:16],
-            mm_hash_params.get("do_remote_encode"),
-            mm_hash_params.get("remote_host"),
-            mm_hash_params.get("remote_port"),
-        )
 
         if mm_hash_params.get("do_remote_encode"):
             if all(p in mm_hash_params for p in ("remote_host", "remote_port")):
@@ -465,15 +386,6 @@ class MooncakeECConnectorScheduler:
                 self._mm_hashes_need_recv[Key(mm_hash, request.request_id)] = (
                     request,
                     num_encoder_tokens,
-                )
-                logger.info(
-                    "[EC_SCHEDULER] ✓ Added to recv queue: mm_hash=%s, req_id=%s, "
-                    "num_tokens=%d, remote=%s:%s",
-                    mm_hash[:16],
-                    request.request_id[:16],
-                    num_encoder_tokens,
-                    mm_hash_params["remote_host"],
-                    mm_hash_params["remote_port"],
                 )
             else:
                 logger.warning(
@@ -485,22 +397,12 @@ class MooncakeECConnectorScheduler:
 
             # Only trigger 1 EC transfer per mm_hash
             mm_hash_params["do_remote_encode"] = False
-            logger.debug(
-                "[EC_SCHEDULER] Set do_remote_encode=False to prevent duplicates"
-            )
 
     def build_connector_meta(
         self,
         scheduler_output: SchedulerOutput,
         encoder_cache_manager=None,
     ) -> ECConnectorMetadata:
-        logger.info(
-            "[EC_SCHEDULER] build_connector_meta called: "
-            "pending_recv=%d, is_producer=%s",
-            len(self._mm_hashes_need_recv),
-            self.is_producer,
-        )
-
         meta = MooncakeECConnectorMetadata()
 
         # Convert mm_hashes to metadata
@@ -520,48 +422,17 @@ class MooncakeECConnectorScheduler:
                         remote_host=mm_hash_params["remote_host"],
                         remote_port=mm_hash_params["remote_port"],
                     )
-                    logger.info(
-                        "[EC_SCHEDULER] Added recv_req to metadata: mm_hash=%s, "
-                        "req_id=%s, num_tokens=%d, remote=%s:%s",
-                        mm_hash[:16],
-                        request.request_id[:16],
-                        num_encoder_tokens,
-                        mm_hash_params["remote_host"],
-                        mm_hash_params["remote_port"],
-                    )
-                else:
-                    logger.warning(
-                        "[EC_SCHEDULER] No ec_transfer_params found for mm_hash=%s "
-                        "in request=%s",
-                        mm_hash[:16],
-                        request.request_id[:16],
-                    )
 
         # Clear the lists once workers start the transfers
-        num_cleared = len(self._mm_hashes_need_recv)
         self._mm_hashes_need_recv.clear()
-        logger.info(
-            "[EC_SCHEDULER] Cleared %d items from _mm_hashes_need_recv", num_cleared
-        )
 
-        # 2. Save any EncoderCacheManager-cached items to external storage. 
+        # 2. Save any EncoderCacheManager-cached items to external storage.
         # Only producer needs to save.
         if self.is_producer and encoder_cache_manager is not None:
             scheduled_mm_hashes = self._collect_scheduled_mm_hashes(scheduler_output)
-            logger.info(
-                "[EC_SCHEDULER] Producer checking EncoderCacheManager→External sync: "
-                "scheduled_mm_hashes=%d",
-                len(scheduled_mm_hashes),
-            )
 
             for mm_hash, num_token in scheduled_mm_hashes.items():
                 has_hbm = encoder_cache_manager.has_cache(mm_hash)
-
-                logger.debug(
-                    "[EC_SCHEDULER] mm_hash=%s: has_hbm=%s",
-                    mm_hash[:16],
-                    has_hbm,
-                )
 
                 if has_hbm:
                     meta.add_save_req(
@@ -571,20 +442,6 @@ class MooncakeECConnectorScheduler:
                             mm_addr=0,
                         ),
                     )
-
-                    logger.info(
-                        "[EC_SCHEDULER] ✓ Marked for saving: mm_hash=%s, num_tokens=%d "
-                        "(EncoderCacheManager has cache)",
-                        mm_hash[:16],
-                        num_token,
-                    )
-
-        logger.info(
-            "[EC_SCHEDULER] build_connector_meta finished: "
-            "mm_hashes_to_recv=%d, mm_hashes_to_save=%d",
-            len(meta.mm_hashes_to_recv),
-            len(meta.mm_hashes_to_save),
-        )
 
         return meta
 
@@ -596,12 +453,6 @@ class MooncakeECConnectorScheduler:
         Once a request is finished, determine whether request blocks
         should be freed now or will be sent asynchronously and freed later.
         """
-        logger.info(
-            "[EC_SCHEDULER] request_finished: req_id=%s, is_producer=%s",
-            request.request_id[:16],
-            self.is_producer,
-        )
-
         if not self.is_producer:
             # Consumer doesn't return params
             logger.debug("[EC_SCHEDULER] Consumer node, no params to return")
@@ -617,17 +468,6 @@ class MooncakeECConnectorScheduler:
                 "remote_host": self.side_channel_host,
                 "remote_port": self.side_channel_port,
             }
-            logger.info(
-                "[EC_SCHEDULER] Returning ec_transfer_params for mm_hash=%s: "
-                "host=%s, port=%d",
-                mm_hash[:16],
-                self.side_channel_host,
-                self.side_channel_port,
-            )
-
-        logger.info(
-            "[EC_SCHEDULER] request_finished returns %d mm_hashes", len(result_params)
-        )
         return len(result_params) > 0, result_params if result_params else None
 
     def _collect_scheduled_mm_hashes(
@@ -808,21 +648,7 @@ class MooncakeECConnectorWorker:
     def save_caches(
         self, encoder_cache: dict[str, torch.Tensor], mm_hash: str, **kwargs
     ) -> None:
-        logger.info(
-            "[EC_WORKER] save_caches called: mm_hash=%s, tensor_shape=%s, tp_rank=%d",
-            mm_hash[:16],
-            encoder_cache[mm_hash].shape,
-            self.tp_rank,
-        )
-
         addr = self.transfer_buffer.store_tensor(encoder_cache[mm_hash])
-
-        logger.info(
-            "[EC_WORKER] Tensor stored in pool: mm_hash=%s, addr=0x%x, size=%d bytes",
-            mm_hash[:16],
-            addr,
-            encoder_cache[mm_hash].numel() * encoder_cache[mm_hash].element_size(),
-        )
 
         # Update bookkeeping for this mm_hash. We intentionally do this
         # after store_tensor returns to avoid deadlock if the pool evicts
@@ -844,13 +670,6 @@ class MooncakeECConnectorWorker:
             mm_hash = self._addr_to_mm_hash.pop(addr, None)
             if mm_hash is not None:
                 self.local_mm_addrs.pop(mm_hash, None)
-                logger.info(
-                    "[EC_WORKER] ♻️  Pool eviction callback: freed mm_hash=%s "
-                    "at addr=0x%x, remaining_cached=%d",
-                    mm_hash[:16],
-                    addr,
-                    len(self.local_mm_addrs),
-                )
             else:
                 logger.debug(
                     "[EC_WORKER] Pool freed unknown addr=0x%x (not in tracking)", addr
@@ -938,24 +757,9 @@ class MooncakeECConnectorWorker:
             request = self._cache_check_decoder.decode(request_bytes)
             mm_hash = request.mm_hash
 
-            logger.info(
-                "[EC_WORKER_SENDER] Received CHECK_CACHE_MSG for mm_hash=%s from %s",
-                mm_hash[:16],
-                identity.hex()[:16],
-            )
-
             # Check if cache exists in local_mm_addrs (external tensor pool)
             exists = self.has_cache_in_buffer(mm_hash)
             num_encoder_tokens = 0
-
-            if exists:
-                logger.info(
-                    "[EC_WORKER_SENDER] ✓ Cache EXISTS for mm_hash=%s", mm_hash[:16]
-                )
-            else:
-                logger.info(
-                    "[EC_WORKER_SENDER] ✗ Cache NOT FOUND for mm_hash=%s", mm_hash[:16]
-                )
 
             response = MooncakeCacheCheckResponse(
                 exists=exists,
@@ -1003,15 +807,6 @@ class MooncakeECConnectorWorker:
 
     def send_ec_cache(self, meta: MooncakeECAgentMetadata):
         send_mm_hashes = [mm_hash for (mm_hash, _) in meta.mm_hashes]
-
-        logger.info(
-            "[EC_WORKER_SENDER] send_ec_cache called: num_mm_hashes=%d, "
-            "remote=%s:%d, tp_rank=%d",
-            len(send_mm_hashes),
-            meta.remote_hostname,
-            meta.remote_port,
-            self.tp_rank,
-        )
         for mm_hash, req_ids in meta.mm_hashes:
             logger.debug(
                 "[EC_WORKER_SENDER] Will send mm_hash=%s for req_ids=%s",
@@ -1026,9 +821,6 @@ class MooncakeECConnectorWorker:
             for mm_hash, req_ids in meta.mm_hashes:
                 keys.extend([Key(mm_hash, req_id) for req_id in req_ids])
             self.finished_sending_mm_hashes.set.update(keys)
-            logger.info(
-                "[EC_WORKER_SENDER] Marked %d keys as finished sending", len(keys)
-            )
 
     def _send_caches(
         self,
@@ -1041,13 +833,6 @@ class MooncakeECConnectorWorker:
         remote_mm_addrs = agent_meta.remote_mm_addrs
         remote_token_bytes = agent_meta.remote_token_bytes
         remote_session = f"{agent_meta.remote_hostname}:{agent_meta.remote_port}"
-
-        logger.info(
-            "[EC_WORKER_SENDER] _send_caches preparing batch transfer: "
-            "num_items=%d, remote_session=%s",
-            len(send_mm_hashes),
-            remote_session,
-        )
 
         for mm_hash, remote_token_byte, remote_mm_addr in zip(
             send_mm_hashes, remote_token_bytes, remote_mm_addrs
@@ -1073,33 +858,15 @@ class MooncakeECConnectorWorker:
             dst_ptrs.append(remote_mm_addr)
             lengths.append(remote_token_byte)
 
-            logger.info(
-                "[EC_WORKER_SENDER] ✓ Added to batch: mm_hash=%s, "
-                "src_addr=0x%x, dst_addr=0x%x, size=%d bytes",
-                mm_hash[:16],
-                addr,
-                remote_mm_addr,
-                remote_token_byte,
-            )
-
         if not src_ptrs:
             logger.warning(
                 "[EC_WORKER_SENDER] No valid transfers in batch, skipping RDMA"
             )
             return
 
-        logger.info(
-            "[EC_WORKER_SENDER] Starting Mooncake RDMA batch_transfer_sync_write: "
-            "num_transfers=%d, total_bytes=%d",
-            len(src_ptrs),
-            sum(lengths),
-        )
-
-        start_time = time.perf_counter()
         ret_value = self.engine.batch_transfer_sync_write(
             remote_session, src_ptrs, dst_ptrs, lengths
         )
-        elapsed = time.perf_counter() - start_time
 
         if ret_value != 0:
             logger.error(
@@ -1107,16 +874,6 @@ class MooncakeECConnectorWorker:
                 ret_value,
             )
             raise RuntimeError(f"Error in batch_transfer_sync_write: {ret_value}")
-
-        bandwidth_gbps = (sum(lengths) / (1024**3)) / elapsed if elapsed > 0 else 0
-        logger.info(
-            "[EC_WORKER_SENDER] ✓ RDMA transfer SUCCESS: %d transfers, "
-            "%.2f MB in %.3fs (%.2f GB/s)",
-            len(src_ptrs),
-            sum(lengths) / (1024**2),
-            elapsed,
-            bandwidth_gbps,
-        )
 
     async def fetch_finished_recving_mm_hashes(self) -> set[MMHash]:
         async with self.finished_recving_mm_hashes.finish_recv_cond:
@@ -1168,24 +925,6 @@ class MooncakeECConnectorWorker:
     ):
         mm_hashes, mm_hashes_meta = map(list, zip(*mm_hash_items))
 
-        logger.info(
-            "[EC_WORKER_RECEIVER] receive_ec called: num_mm_hashes=%d, "
-            "path=%s, tp_rank=%d",
-            len(mm_hashes),
-            path,
-            self.tp_rank,
-        )
-
-        for (mm_hash, req_ids), meta in mm_hash_items:
-            logger.info(
-                "[EC_WORKER_RECEIVER] Will receive mm_hash=%s, req_ids=%s, "
-                "num_tokens=%d, allocated_addr=0x%x",
-                mm_hash[:16],
-                [rid[:16] for rid in req_ids],
-                meta.num_encoder_tokens,
-                meta.mm_addr,
-            )
-
         metadata = MooncakeECAgentMetadata(
             remote_hostname=self.hostname,
             remote_port=self.rpc_port,
@@ -1197,12 +936,6 @@ class MooncakeECConnectorWorker:
         )
 
         encoded_data = self._encoder.encode(metadata)
-        logger.info(
-            "[EC_WORKER_RECEIVER] Sending transfer request: "
-            "metadata_size=%d bytes, total_bytes=%d",
-            len(encoded_data),
-            sum(metadata.remote_token_bytes),
-        )
 
         # Send query for the request.
         sock: zmq.asyncio.Socket = make_zmq_socket(
@@ -1210,28 +943,18 @@ class MooncakeECConnectorWorker:
         )
         sock.setsockopt(zmq.RCVTIMEO, 60000)
 
-        start_time = time.perf_counter()
         try:
             await sock.send(encoded_data)
-            logger.debug(
-                "[EC_WORKER_RECEIVER] Transfer request sent, waiting for RDMA..."
-            )
 
             ret_msg = await sock.recv()
-            elapsed = time.perf_counter() - start_time
 
             if ret_msg != TRANS_DONE:
                 logger.error(
-                    "[EC_WORKER_RECEIVER] ✗ Transfer FAILED: got %s instead "
+                    "[EC_WORKER_RECEIVER] Transfer FAILED: got %s instead "
                     "of TRANS_DONE",
                     ret_msg,
                 )
                 return
-
-            logger.info(
-                "[EC_WORKER_RECEIVER] ✓ Transfer acknowledgment received in %.3fs",
-                elapsed,
-            )
         except zmq.ContextTerminated:
             logger.debug(
                 "[EC_WORKER_RECEIVER] ZMQ context terminated, exiting receiver thread."
@@ -1247,11 +970,6 @@ class MooncakeECConnectorWorker:
             sock.close()
 
         # Load tensors from received buffer
-        logger.info(
-            "[EC_WORKER_RECEIVER] Loading %d tensors from receive buffer...",
-            len(mm_hashes),
-        )
-
         for (mm_hash, _), addr, num_bytes in zip(
             metadata.mm_hashes, metadata.remote_mm_addrs, metadata.remote_token_bytes
         ):
@@ -1270,56 +988,18 @@ class MooncakeECConnectorWorker:
                 copy=True,
             )
 
-            logger.info(
-                "[EC_WORKER_RECEIVER] ✓ Loaded tensor: mm_hash=%s, shape=%s",
-                mm_hash[:16],
-                encoder_cache[mm_hash].shape,
-            )
-
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             mm_hashes = [mm_hash for (mm_hash, _) in mm_hashes]
             self.finished_recving_mm_hashes.set.update(mm_hashes)
 
-            logger.info(
-                "[EC_WORKER_RECEIVER] Updated finished_recving: %d mm_hashes, "
-                "total_finished=%d, need_recv=%d",
-                len(mm_hashes),
-                len(self.finished_recving_mm_hashes.set),
-                len(self.mm_hashes_need_recv),
-            )
-
             if self.finished_recving_mm_hashes.set == self.mm_hashes_need_recv:
                 self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
-                logger.info(
-                    "[EC_WORKER_RECEIVER] ✓ All required mm_hashes received, "
-                    "notifying waiters"
-                )
-
-        logger.info(
-            "[EC_WORKER_RECEIVER] receive_ec finished for %d mm_hashes", len(mm_hashes)
-        )
 
     def group_ec_pull(self, metadata: MooncakeECConnectorMetadata):
         ec_pulls: dict[str, dict[MMHash, tuple[list[ReqId], MMHashMeta]]] = defaultdict(
             dict
         )
-
-        logger.info(
-            "[EC_WORKER_RECEIVER] group_ec_pull: grouping %d items by remote path",
-            len(metadata.mm_hashes_to_recv),
-        )
-
         for key, meta in metadata.mm_hashes_to_recv.items():
-            logger.info(
-                "[EC_WORKER_RECEIVER] Processing mm_hash=%s, req_id=%s, "
-                "num_tokens=%d, remote=%s:%d",
-                key.mm_hash[:16],
-                key.req_id[:16],
-                meta.mm_hash_meta.num_encoder_tokens,
-                meta.remote_host,
-                meta.remote_port,
-            )
-
             path = make_zmq_path(
                 "tcp", meta.remote_host, meta.remote_port + self.tp_rank
             )
@@ -1329,14 +1009,6 @@ class MooncakeECConnectorWorker:
                 # Allocate receive buffer
                 alloc_size = meta.mm_hash_meta.num_encoder_tokens * self.byte_per_token
                 meta.mm_hash_meta.mm_addr = self.transfer_buffer.allocate(alloc_size)
-
-                logger.info(
-                    "[EC_WORKER_RECEIVER] Allocated receive buffer: mm_hash=%s, "
-                    "addr=0x%x, size=%d bytes",
-                    key.mm_hash[:16],
-                    meta.mm_hash_meta.mm_addr,
-                    alloc_size,
-                )
 
                 mm_hashes_meta[key.mm_hash] = ([key.req_id], meta.mm_hash_meta)
             else:
@@ -1349,13 +1021,6 @@ class MooncakeECConnectorWorker:
                     key.req_id[:16],
                 )
 
-        logger.info(
-            "[EC_WORKER_RECEIVER] group_ec_pull finished: grouped into %d paths, "
-            "total_mm_hashes=%d",
-            len(ec_pulls),
-            sum(len(v) for v in ec_pulls.values()),
-        )
-
         return ec_pulls
 
     def start_load_caches(
@@ -1367,16 +1032,7 @@ class MooncakeECConnectorWorker:
             [key.mm_hash for key in metadata.mm_hashes_to_recv]
         )
 
-        logger.info(
-            "[EC_WORKER_RECEIVER] start_load_caches: need_recv=%d mm_hashes",
-            len(self.mm_hashes_need_recv),
-        )
-
         ec_pulls = self.group_ec_pull(metadata)
-
-        logger.info(
-            "[EC_WORKER_RECEIVER] Starting %d async receive_ec tasks", len(ec_pulls)
-        )
 
         for path, mm_hashes_meta in ec_pulls.items():
             mm_hash_items = [
@@ -1384,38 +1040,21 @@ class MooncakeECConnectorWorker:
                 for mm_hash, (req_ids, meta) in mm_hashes_meta.items()
             ]
 
-            logger.info(
-                "[EC_WORKER_RECEIVER] Scheduling receive_ec for path=%s, "
-                "num_mm_hashes=%d",
-                path,
-                len(mm_hash_items),
-            )
-
             asyncio.run_coroutine_threadsafe(
                 self.receive_ec(path, mm_hash_items, encoder_cache), self.receiver_loop
             )
 
-        logger.info("[EC_WORKER_RECEIVER] All receive_ec tasks scheduled")
-
     async def _wait_for_load(self) -> None:
-        logger.info("[EC_WORKER_RECEIVER] _wait_for_load: waiting for all mm_hashes...")
-
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             await self.finished_recving_mm_hashes.finish_recv_cond.wait_for(
                 lambda: self.finished_recving_mm_hashes.set == self.mm_hashes_need_recv
             )
 
-        logger.info(
-            "[EC_WORKER_RECEIVER] ✓ _wait_for_load complete: all mm_hashes received"
-        )
-
     def wait_for_load(self) -> None:
-        logger.info("[EC_WORKER_RECEIVER] wait_for_load: blocking until complete...")
         fut = asyncio.run_coroutine_threadsafe(
             self._wait_for_load(), self.receiver_loop
         )
         fut.result()  # Block until complete
-        logger.info("[EC_WORKER_RECEIVER] wait_for_load: unblocked")
 
     def has_cache_in_buffer(
         self,
