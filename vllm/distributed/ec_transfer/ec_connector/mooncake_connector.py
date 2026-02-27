@@ -679,7 +679,7 @@ class MooncakeECConnectorWorker:
         )
         self.transfer_buffer: EncoderCacheTransferBuffer = EncoderCacheTransferBuffer(
             buffer_size=self._buffer_size,
-            device="cuda",
+            device="cpu",
         )
 
         # stored addr of mm tensor in registered caches (external tensor pool)
