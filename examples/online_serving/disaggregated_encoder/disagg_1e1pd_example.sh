@@ -8,7 +8,7 @@ declare -a PIDS=()
 ###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./logs}"
-mkdir -p $LOG_PATH
+mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
@@ -78,10 +78,10 @@ trap cleanup TERM
 
 # clear previous cache
 echo "remove previous ec cache folder"
-rm -rf $EC_SHARED_STORAGE_PATH
+rm -rf "$EC_SHARED_STORAGE_PATH"
 
 echo "make ec cache folder"
-mkdir -p $EC_SHARED_STORAGE_PATH
+mkdir -p "$EC_SHARED_STORAGE_PATH"
 
 ###############################################################################
 # Encoder worker
@@ -94,7 +94,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --no-enable-prefix-caching \
     --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
-    --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
         "ec_role": "ec_producer",
@@ -115,7 +115,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-num-seqs 128 \
-    --allowed-local-media-path ${GIT_ROOT}/tests/v1/ec_connector/integration \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
         "ec_role": "ec_consumer",
@@ -128,8 +128,8 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
 PIDS+=($!)
 
 # Wait for workers
-wait_for_server $ENCODE_PORT
-wait_for_server $PREFILL_DECODE_PORT
+wait_for_server "$ENCODE_PORT"
+wait_for_server "$PREFILL_DECODE_PORT"
 
 ###############################################################################
 # Proxy
@@ -144,62 +144,41 @@ python disagg_epd_proxy.py \
 
 PIDS+=($!)
 
-wait_for_server $PROXY_PORT
+wait_for_server "$PROXY_PORT"
 echo "All services are up!"
 
-# ###############################################################################
-# # Benchmark
-# ###############################################################################
-# echo "Running benchmark (stream)..."
-# vllm bench serve \
-#   --model               $MODEL \
-#   --backend             openai-chat \
-#   --endpoint            /v1/chat/completions \
-#   --dataset-name        hf \
-#   --dataset-path        lmarena-ai/VisionArena-Chat \
-#   --seed                0 \
-#   --num-prompts         $NUM_PROMPTS \
-#   --port                $PROXY_PORT
-
-# PIDS+=($!)
-
-# ###############################################################################
-# # Single request with local image
-# ###############################################################################
-# echo "Running single request with local image (non-stream)..."
-# curl http://127.0.0.1:${PROXY_PORT}/v1/chat/completions \
-#     -H "Content-Type: application/json" \
-#     -d '{
-#     "model": "'${MODEL}'",
-#     "messages": [
-#     {"role": "system", "content": "You are a helpful assistant."},
-#     {"role": "user", "content": [
-#         {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
-#         {"type": "text", "text": "What is in this image?"}
-#     ]}
-#     ]
-#     }'
-
-
-#### copy mooncake
 ###############################################################################
 # Benchmark
 ###############################################################################
+echo "Running benchmark (stream)..."
 vllm bench serve \
-    --model $MODEL \
-    --dataset-name random-mm \
-    --num-prompts $NUM_PROMPTS \
-    --random-input-len 400 \
-    --random-output-len 100 \
-    --random-range-ratio 0.0 \
-    --random-mm-base-items-per-request 3 \
-    --random-mm-num-mm-items-range-ratio 0 \
-    --random-mm-limit-mm-per-prompt '{"image":10,"video":0}' \
-    --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
-    --ignore-eos \
-    --backend openai-chat \
-    --endpoint /v1/chat/completions \
-    --port $PROXY_PORT
+  --model               "$MODEL" \
+  --backend             openai-chat \
+  --endpoint            /v1/chat/completions \
+  --dataset-name        hf \
+  --dataset-path        lmarena-ai/VisionArena-Chat \
+  --seed                0 \
+  --num-prompts         "$NUM_PROMPTS" \
+  --port                "$PROXY_PORT"
+
+PIDS+=($!)
+
+###############################################################################
+# Single request with local image
+###############################################################################
+echo "Running single request with local image (non-stream)..."
+curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+    "model": "'"${MODEL}"'",
+    "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+        {"type": "text", "text": "What is in this image?"}
+    ]}
+    ]
+    }'
 
 
 # cleanup
