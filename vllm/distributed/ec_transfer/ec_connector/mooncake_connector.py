@@ -1137,7 +1137,7 @@ class MooncakeECConnectorWorker:
         self,
         path: str,
         mm_hash_items: list[tuple[tuple[MMHash, list[ReqId]], MMHashMeta]],
-        ec_cache: dict[str, torch.Tensor],
+        encoder_cache: dict[str, torch.Tensor],
     ):
         mm_hashes, mm_hashes_meta = map(list, zip(*mm_hash_items))
 
@@ -1235,7 +1235,7 @@ class MooncakeECConnectorWorker:
                 num_bytes,
             )
 
-            ec_cache[mm_hash] = self.transfer_buffer.load_tensor(
+            encoder_cache[mm_hash] = self.transfer_buffer.load_tensor(
                 addr,
                 self.dtype,
                 (num_bytes // self.byte_per_token, self.embed_size),
@@ -1246,7 +1246,7 @@ class MooncakeECConnectorWorker:
             logger.info(
                 "[EC_WORKER_RECEIVER] ✓ Loaded tensor: mm_hash=%s, shape=%s",
                 mm_hash[:16],
-                ec_cache[mm_hash].shape,
+                encoder_cache[mm_hash].shape,
             )
 
         async with self.finished_recving_mm_hashes.finish_recv_cond:
@@ -1332,7 +1332,9 @@ class MooncakeECConnectorWorker:
         return ec_pulls
 
     def start_load_caches(
-        self, ec_cache: dict[str, torch.Tensor], metadata: MooncakeECConnectorMetadata
+        self,
+        encoder_cache: dict[str, torch.Tensor],
+        metadata: MooncakeECConnectorMetadata,
     ):
         self.mm_hashes_need_recv = set(
             [key.mm_hash for key in metadata.mm_hashes_to_recv]
@@ -1363,7 +1365,7 @@ class MooncakeECConnectorWorker:
             )
 
             asyncio.run_coroutine_threadsafe(
-                self.receive_ec(path, mm_hash_items, ec_cache), self.receiver_loop
+                self.receive_ec(path, mm_hash_items, encoder_cache), self.receiver_loop
             )
 
         logger.info("[EC_WORKER_RECEIVER] All receive_ec tasks scheduled")
