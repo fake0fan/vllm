@@ -75,7 +75,9 @@ trap cleanup TERM
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_EC_MOONCAKE_BOOTSTRAP_PORT=9198 \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.4 \
     --port "$ENCODE_PORT" \
     --enforce-eager \

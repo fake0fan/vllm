@@ -123,6 +123,7 @@ class ECExampleConnector(ECConnectorBase):
     def has_cache_item(
         self,
         identifier: str,
+        request: "Request" = None,
     ) -> bool:
         """
         Check if cache exist externally for the media

@@ -178,10 +178,11 @@ class MooncakeECConnector(ECConnectorBase):
     def has_cache_item(
         self,
         identifier: str,
+        request: "Request" = None,
     ) -> bool:
         """Check if encoder cache exists remotely for a single mm item."""
         assert self.connector_scheduler is not None
-        return self.connector_scheduler.has_cache_item(identifier)
+        return self.connector_scheduler.has_cache_item(identifier, request)
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         """Update state after encoder cache allocation."""
@@ -295,11 +296,14 @@ class MooncakeECConnectorScheduler:
     def has_cache_item(
         self,
         identifier: str,
+        request: "Request",
     ) -> bool:
         """Check if encoder cache exists remotely for a single mm item.
 
         Uses real-time probe to query encoder instance directly, avoiding
         reliance on stale ec_transfer_params.
+
+        Request info (host, port) is a must for consumer to find cache
         """
         logger.info(
             "[EC_SCHEDULER] has_cache_item called for mm_hash=%s, is_producer=%s",
@@ -312,8 +316,18 @@ class MooncakeECConnectorScheduler:
             logger.debug("[EC_SCHEDULER] Producer node, skipping remote cache check")
             return False
 
-        remote_host = self.side_channel_host
-        remote_port = self.side_channel_port
+        try:
+            ec_transfer_params = getattr(request, "ec_transfer_params", {})
+            mm_hash_params = ec_transfer_params.get(identifier, {})
+            remote_host = mm_hash_params.get("remote_host")
+            remote_port = mm_hash_params.get("remote_port")
+            
+            if not remote_host or not remote_port:
+                logger.error("Missing remote_host or remote_port for hash: %s", identifier)
+                return False
+        except Exception as e:
+            logger.error("Unable to get remote host and port. Error: %s", e)
+            return False
 
         logger.info(
             "[EC_SCHEDULER] Probing encoder at %s:%d for mm_hash=%s",
@@ -530,8 +544,8 @@ class MooncakeECConnectorScheduler:
             "[EC_SCHEDULER] Cleared %d items from _mm_hashes_need_recv", num_cleared
         )
 
-        # 2. Check if any EncoderCacheManager-cached items need to be saved to
-        # external storage. Only producer needs to save.
+        # 2. Save any EncoderCacheManager-cached items to external storage. 
+        # Only producer needs to save.
         if self.is_producer and encoder_cache_manager is not None:
             scheduled_mm_hashes = self._collect_scheduled_mm_hashes(scheduler_output)
             logger.info(
@@ -541,27 +555,15 @@ class MooncakeECConnectorScheduler:
             )
 
             for mm_hash, num_token in scheduled_mm_hashes.items():
-                # Skip if already in metadata (from loading)
-                if any(k.mm_hash == mm_hash for k in meta.mm_hashes_to_recv):
-                    logger.debug(
-                        "[EC_SCHEDULER] Skip saving mm_hash=%s (already in recv)",
-                        mm_hash[:16],
-                    )
-                    continue
-
-                # Check if external storage doesn't have it but EncoderCacheManager does
-                has_external = self.has_cache_item(mm_hash)
                 has_hbm = encoder_cache_manager.has_cache(mm_hash)
 
                 logger.debug(
-                    "[EC_SCHEDULER] mm_hash=%s: has_external=%s, has_hbm=%s",
+                    "[EC_SCHEDULER] mm_hash=%s: has_hbm=%s",
                     mm_hash[:16],
-                    has_external,
                     has_hbm,
                 )
 
-                if not has_external and has_hbm:
-                    # EncoderCacheManager has but external doesn't - mark for saving
+                if has_hbm:
                     meta.add_save_req(
                         mm_hash=mm_hash,
                         mm_hash_meta=MMHashMeta(
@@ -569,9 +571,10 @@ class MooncakeECConnectorScheduler:
                             mm_addr=0,
                         ),
                     )
+
                     logger.info(
                         "[EC_SCHEDULER] ✓ Marked for saving: mm_hash=%s, num_tokens=%d "
-                        "(EncoderCacheManager has cache but external doesn't)",
+                        "(EncoderCacheManager has cache)",
                         mm_hash[:16],
                         num_token,
                     )
@@ -942,7 +945,7 @@ class MooncakeECConnectorWorker:
             )
 
             # Check if cache exists in local_mm_addrs (external tensor pool)
-            exists = self.has_cache_item(mm_hash)
+            exists = self.has_cache_in_buffer(mm_hash)
             num_encoder_tokens = 0
 
             if exists:
@@ -1412,11 +1415,11 @@ class MooncakeECConnectorWorker:
         fut.result()  # Block until complete
         logger.info("[EC_WORKER_RECEIVER] wait_for_load: unblocked")
 
-    def has_cache_item(
+    def has_cache_in_buffer(
         self,
         identifier: str,
     ) -> bool:
-        """WORKER to check if encoder cache exists remotely for a single mm item."""
+        """Worker to check if encoder cache exists in buffer for a single mm item."""
         with self._mm_lock:
             return identifier in self.local_mm_addrs
 
@@ -1429,9 +1432,8 @@ class MooncakeECConnectorWorker:
             if (not self.is_producer) or (mm_hash not in encoder_cache):
                 continue
 
-            # Check if external storage doesn't have it but EncodeCacheManager
-            # does
-            if not self.has_cache_item(mm_hash):
+            # Check if external storage doesn't have it but HBM does
+            if not self.has_cache_in_buffer(mm_hash):
                 logger.debug(
                     "update_remote_cache_state for hash %s",
                     mm_hash,

@@ -1187,7 +1187,7 @@ class Scheduler(SchedulerInterface):
                 continue
 
             if self.ec_connector is not None and self.ec_connector.has_cache_item(
-                item_identifier
+                item_identifier, request
             ):
                 mm_hashes_to_schedule.add(item_identifier)
                 external_load_encoder_input.append(i)
