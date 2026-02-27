@@ -14,8 +14,8 @@ ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
 PROXY_PORT="${PROXY_PORT:-10006}"
 
-GPU_E="${GPU_E:-6}"
-GPU_PD="${GPU_PD:-7}"
+GPU_E="${GPU_E:-0}"
+GPU_PD="${GPU_PD:-1}"
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
@@ -88,7 +88,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
         \"ec_role\": \"ec_producer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_8\",
+            \"device_name\": \"mlx5_2,mlx5_3\",
             \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
@@ -110,7 +110,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
         \"ec_role\": \"ec_consumer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_6\",
+            \"device_name\": \"mlx5_2,mlx5_3\",
             \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
