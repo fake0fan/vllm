@@ -153,29 +153,10 @@ class ECExampleConnector(ECConnectorBase):
         """
         Synchronize encoder caches from EncoderCacheManager to external storage.
 
-        This ensures that caches present in EncoderCacheManager but not yet
-        in external storage are saved for remote access.
+        Example connector does not implement this functionality.
+        Caches are saved immediately when computed via save_caches().
         """
-        metadata: ECConnectorMetadata = self._get_connector_metadata()
-        assert isinstance(metadata, ECExampleConnectorMetadata)
-
-        # Early exit if not producer or no caches to sync
-        if not self.is_producer or not metadata.mm_datas:
-            return
-
-        for mm_data in metadata.mm_datas:
-            # Skip if not in EncoderCacheManager
-            if mm_data.mm_hash not in encoder_cache:
-                continue
-
-            # Skip if already in external storage
-            if self.has_cache_item(mm_data.mm_hash):
-                continue
-
-            self.save_caches(
-                encoder_cache=encoder_cache,
-                mm_hash=mm_data.mm_hash,
-            )
+        pass
 
     def build_connector_meta(
         self,
