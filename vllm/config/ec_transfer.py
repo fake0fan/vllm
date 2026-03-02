@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import hashlib
 import uuid
 from dataclasses import field
 from typing import Any, Literal, get_args
@@ -8,6 +7,7 @@ from typing import Any, Literal, get_args
 from pydantic.dataclasses import dataclass
 
 from vllm.config.utils import config
+from vllm.utils.hashing import safe_hash
 
 ECProducer = Literal["ec_producer"]
 ECConsumer = Literal["ec_consumer"]
@@ -60,6 +60,11 @@ class ECTransferConfig:
     """The Python module path to dynamically load the EC connector from.
     Only supported in V1."""
 
+    ec_load_failure_policy: Literal["recompute", "fail"] = "recompute"
+    """Policy for handling EC cache load failures.
+    'recompute': fallback to local encoder computation (default)
+    'fail': immediately fail the request with an error finish reason"""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -75,7 +80,7 @@ class ECTransferConfig:
         # no factors to consider.
         # this config will not affect the computation graph.
         factors: list[Any] = []
-        hash_str = hashlib.md5(str(factors).encode(), usedforsecurity=False).hexdigest()
+        hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
         return hash_str
 
     def __post_init__(self) -> None:

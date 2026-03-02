@@ -152,6 +152,16 @@ class ECConnectorOutput:
     # [mm_hash]
     finished_sending: set[str] | None = None
     finished_recving: set[str] | None = None
+    # mm_hashes of encoder caches that failed to load.
+    # Requests referencing these mm_hashes should fallback to local encoding
+    invalid_mm_hashes: set[str] = field(default_factory=set)
+
+    def is_empty(self):
+        return (
+            not self.finished_sending
+            and not self.finished_recving
+            and not self.invalid_mm_hashes
+        )
 
 
 # ModelRunnerOutput is serialized and sent to the scheduler process.

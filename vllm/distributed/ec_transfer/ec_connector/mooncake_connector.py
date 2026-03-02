@@ -50,7 +50,6 @@ ReqId = str
 
 TRANS_DONE = b"trans_done"
 TRANS_ERROR = b"trans_error"
-CHECK_CACHE_MSG = b"check_cache"
 
 logger = init_logger(__name__)
 
@@ -80,27 +79,6 @@ class MMHashMeta:
     mm_addr: int
 
 
-class MooncakeCacheCheckRequest(
-    msgspec.Struct,
-    omit_defaults=True,  # type: ignore[call-arg]
-    dict=True,
-):
-    """Request to check if cache exists for mm_hash."""
-
-    mm_hash: str
-
-
-class MooncakeCacheCheckResponse(
-    msgspec.Struct,
-    omit_defaults=True,  # type: ignore[call-arg]
-    dict=True,
-):
-    """Response indicating cache existence."""
-
-    exists: bool
-    num_encoder_tokens: int  # 0 if not exists
-
-
 @dataclass
 class RecvMMHashMeta:
     mm_hash_meta: MMHashMeta
@@ -118,6 +96,14 @@ class FinishedSendMMHashSet:
 class FinishedReceiveMMHashSet:
     set: set[MMHash]
     finish_recv_cond: asyncio.Condition
+
+
+@dataclass
+class FailedReceiveMMHashSet:
+    """Track mm_hashes that failed to receive."""
+
+    set: set[MMHash]
+    lock: asyncio.Lock
 
 
 class MooncakeECConnectorMetadata(ECConnectorMetadata):
@@ -241,7 +227,7 @@ class MooncakeECConnector(ECConnectorBase):
 
     def get_finished(
         self, finished_req_ids: set[str]
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         """Get finished receiving and sending requests."""
         assert self.connector_worker is not None
         return self.connector_worker.get_finished(finished_req_ids)
@@ -280,90 +266,36 @@ class MooncakeECConnectorScheduler:
         # Track mm_hashes that need to be loaded from remote
         self._mm_hashes_need_recv: dict[Key, tuple[Request, int]] = {}
 
-        # ZMQ context for cache check probes (only on consumer side)
-        if not self.is_producer:
-            self._probe_zmq_ctx = zmq.Context()
-            self._cache_check_request_encoder = msgspec.msgpack.Encoder()
-            self._cache_check_response_decoder = msgspec.msgpack.Decoder(
-                MooncakeCacheCheckResponse
-            )
-        else:
-            self._probe_zmq_ctx = None
-            self._cache_check_request_encoder = None
-            self._cache_check_response_decoder = None
-
     def has_cache_item(
         self,
         identifier: str,
         request: "Request",
     ) -> bool:
-        """Check if encoder cache exists remotely for a single mm item.
+        """Check if encoder cache transfer is available for this mm item.
 
-        Uses real-time probe to query encoder instance directly, avoiding
-        reliance on stale ec_transfer_params.
+        Optimistic scheduling: if ec_transfer_params exist with do_remote_encode=True,
+        we assume the cache can be transferred. If transfer fails, the failure
+        handling mechanism will rollback and reschedule for local encoding.
 
-        Request info (host, port) is a must for consumer to find cache
+        This approach aligns with KV transfer's optimistic scheduling strategy.
         """
-
         if self.is_producer:
-            # Producer doesn't check remote cache
+            # Producer doesn't load remote cache
             return False
 
         try:
             ec_transfer_params = getattr(request, "ec_transfer_params", {})
             mm_hash_params = ec_transfer_params.get(identifier, {})
-            remote_host = mm_hash_params.get("remote_host")
-            remote_port = mm_hash_params.get("remote_port")
 
-            if not remote_host or not remote_port:
-                return False
+            # Check if we have valid transfer params and remote encoding is enabled
+            has_remote_host = mm_hash_params.get("remote_host") is not None
+            has_remote_port = mm_hash_params.get("remote_port") is not None
+            do_remote_encode = mm_hash_params.get("do_remote_encode", False)
+
+            return has_remote_host and has_remote_port and do_remote_encode
+
         except Exception as e:
-            logger.error("Unable to get remote host and port: %s", e)
-            return False
-
-        # Probe encoder instance for cache existence
-        result = self._probe_cache_existence(identifier, remote_host, remote_port)
-        return result
-
-    def _probe_cache_existence(
-        self, mm_hash: str, remote_host: str, remote_port: int
-    ) -> bool:
-        """Probe encoder instance to check if cache exists.
-
-        Returns True if cache exists, False otherwise.
-        """
-        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
-
-        tp_rank = get_tensor_model_parallel_rank()
-        path = make_zmq_path("tcp", remote_host, remote_port + tp_rank)
-
-        request = MooncakeCacheCheckRequest(mm_hash=mm_hash)
-        request_bytes = self._cache_check_request_encoder.encode(request)
-
-        # Encode message as (msg_type, request)
-        msg_bytes = msgspec.msgpack.encode((CHECK_CACHE_MSG, request_bytes))
-
-        try:
-            sock = make_zmq_socket(
-                self._probe_zmq_ctx, path, zmq.REQ, bind=False, linger=0
-            )
-            sock.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
-
-            sock.send(msg_bytes)
-
-            response_bytes = sock.recv()
-
-            # Decode response
-            response = self._cache_check_response_decoder.decode(response_bytes)
-
-            sock.close()
-            return response.exists
-
-        except zmq.Again:
-            logger.error("[EC_PROBE] Cache probe timed out after 5 seconds")
-            return False
-        except Exception as e:
-            logger.error("[EC_PROBE] Error probing cache existence: %s", e)
+            logger.error("Error checking EC transfer params: %s", e)
             return False
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
@@ -610,13 +542,14 @@ class MooncakeECConnectorWorker:
         self.finished_recving_mm_hashes: FinishedReceiveMMHashSet = (
             FinishedReceiveMMHashSet(set(), asyncio.Condition())
         )
+        self.failed_recving_mm_hashes: FailedReceiveMMHashSet = FailedReceiveMMHashSet(
+            set(), asyncio.Lock()
+        )
 
         self.zmq_ctx = zmq.Context()
         self.async_zmq_ctx = zmq.asyncio.Context()
         self._encoder = msgspec.msgpack.Encoder()
         self._decoder = msgspec.msgpack.Decoder(MooncakeECAgentMetadata)
-        self._cache_check_decoder = msgspec.msgpack.Decoder(MooncakeCacheCheckRequest)
-        self._cache_check_encoder = msgspec.msgpack.Encoder()
 
         # Launch sender thread for producer node
         if self.is_producer:
@@ -706,35 +639,13 @@ class MooncakeECConnectorWorker:
 
                 if frontend in sockets:
                     identity, _, msg_bytes = frontend.recv_multipart()
-                    # Check message type
-                    try:
-                        decoded = msgspec.msgpack.decode(msg_bytes)
-                        if isinstance(decoded, (list, tuple)) and len(decoded) >= 2:
-                            msg_type, request_bytes = decoded[0], decoded[1]
-                        else:
-                            msg_type = decoded
-                            request_bytes = msg_bytes
-
-                        if msg_type == CHECK_CACHE_MSG:
-                            # Handle cache check synchronously (fast operation)
-                            self._handle_cache_check(identity, request_bytes, frontend)
-                        else:
-                            # Handle transfer request asynchronously
-                            self._sender_executor.submit(
-                                self._sender_worker,
-                                identity,
-                                msg_bytes,
-                                backend_path,
-                            )
-                    except Exception as e:
-                        logger.error("Error decoding message: %s", e)
-                        # Fall back to treating as transfer request
-                        self._sender_executor.submit(
-                            self._sender_worker,
-                            identity,
-                            msg_bytes,
-                            backend_path,
-                        )
+                    # Handle transfer request asynchronously
+                    self._sender_executor.submit(
+                        self._sender_worker,
+                        identity,
+                        msg_bytes,
+                        backend_path,
+                    )
 
                 if backend in sockets:
                     identity, status = backend.recv_multipart()
@@ -747,40 +658,6 @@ class MooncakeECConnectorWorker:
         finally:
             frontend.close()
             backend.close()
-
-    def _handle_cache_check(
-        self, identity: bytes, request_bytes: bytes, frontend: zmq.Socket
-    ):
-        """Handle cache existence check request synchronously."""
-        try:
-            # Decode the request
-            request = self._cache_check_decoder.decode(request_bytes)
-            mm_hash = request.mm_hash
-
-            # Check if cache exists in local_mm_addrs (external tensor pool)
-            exists = self.has_cache_in_buffer(mm_hash)
-            num_encoder_tokens = 0
-
-            response = MooncakeCacheCheckResponse(
-                exists=exists,
-                num_encoder_tokens=num_encoder_tokens,
-            )
-            response_bytes = self._cache_check_encoder.encode(response)
-            frontend.send_multipart((identity, b"", response_bytes))
-
-            logger.debug(
-                "[EC_WORKER_SENDER] Sent CHECK_CACHE response: exists=%s",
-                exists,
-            )
-        except Exception as e:
-            logger.exception(
-                "[EC_WORKER_SENDER] Error handling cache check: %s",
-                e,
-            )
-            # Send error response
-            response = MooncakeCacheCheckResponse(exists=False, num_encoder_tokens=0)
-            response_bytes = self._cache_check_encoder.encode(response)
-            frontend.send_multipart((identity, b"", response_bytes))
 
     def _sender_worker(
         self, identity: bytes, metadata_bytes: bytes, worker_channel_path: str
@@ -875,19 +752,32 @@ class MooncakeECConnectorWorker:
             )
             raise RuntimeError(f"Error in batch_transfer_sync_write: {ret_value}")
 
-    async def fetch_finished_recving_mm_hashes(self) -> set[MMHash]:
+    async def fetch_finished_recving_mm_hashes(self) -> tuple[set[MMHash], set[MMHash]]:
+        """Fetch finished and failed receiving mm_hashes.
+
+        Returns:
+            Tuple of (finished_mm_hashes, failed_mm_hashes)
+        """
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             finished_recving_mm_hashes = self.finished_recving_mm_hashes.set
             self.finished_recving_mm_hashes.set = set()
-        return finished_recving_mm_hashes
+
+        async with self.failed_recving_mm_hashes.lock:
+            failed_recving_mm_hashes = self.failed_recving_mm_hashes.set
+            self.failed_recving_mm_hashes.set = set()
+
+        return finished_recving_mm_hashes, failed_recving_mm_hashes
 
     def get_finished(
         self, finished_req_ids: set[str]
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         """
         Get requests that are done sending or recving on this specific worker.
         The scheduler process (via the MultiprocExecutor) will use this output
         to track which workers are done.
+
+        Returns:
+            Tuple of (finished_sending, finished_recving, failed_recving)
         """
         fut = None
         if not self.is_producer:
@@ -904,18 +794,31 @@ class MooncakeECConnectorWorker:
         else:
             finished_sending_mm_hashes = set()
 
-        finished_recving_mm_hashes = fut.result() if fut else set()
+        if fut:
+            finished_recving_mm_hashes, failed_recving_mm_hashes = fut.result()
+        else:
+            finished_recving_mm_hashes = set()
+            failed_recving_mm_hashes = set()
 
-        if finished_sending_mm_hashes or finished_recving_mm_hashes:
+        if (
+            finished_sending_mm_hashes
+            or finished_recving_mm_hashes
+            or failed_recving_mm_hashes
+        ):
             logger.debug(
-                "Rank %s, get_finished: %s requests done sending "
-                "and %s requests done recving",
+                "Rank %s, get_finished: %s requests done sending, "
+                "%s requests done recving, %s requests failed recving",
                 self.tp_rank,
                 len(finished_sending_mm_hashes),
                 len(finished_recving_mm_hashes),
+                len(failed_recving_mm_hashes),
             )
 
-        return finished_sending_mm_hashes or None, finished_recving_mm_hashes or None
+        return (
+            finished_sending_mm_hashes or None,
+            finished_recving_mm_hashes or None,
+            failed_recving_mm_hashes or None,
+        )
 
     async def receive_ec(
         self,
@@ -924,6 +827,7 @@ class MooncakeECConnectorWorker:
         encoder_cache: dict[str, torch.Tensor],
     ):
         mm_hashes, mm_hashes_meta = map(list, zip(*mm_hash_items))
+        mm_hash_list = [mm_hash for (mm_hash, _) in mm_hashes]
 
         metadata = MooncakeECAgentMetadata(
             remote_hostname=self.hostname,
@@ -941,8 +845,10 @@ class MooncakeECConnectorWorker:
         sock: zmq.asyncio.Socket = make_zmq_socket(
             self.async_zmq_ctx, path, zmq.REQ, bind=False, linger=0
         )
-        sock.setsockopt(zmq.RCVTIMEO, 60000)
+        # EC cache is typically smaller than KV cache, 10s should be sufficient
+        sock.setsockopt(zmq.RCVTIMEO, 10000)  # 10 seconds timeout
 
+        transfer_failed = False
         try:
             await sock.send(encoded_data)
 
@@ -951,46 +857,77 @@ class MooncakeECConnectorWorker:
             if ret_msg != TRANS_DONE:
                 logger.error(
                     "[EC_WORKER_RECEIVER] Transfer FAILED: got %s instead "
-                    "of TRANS_DONE",
+                    "of TRANS_DONE for mm_hashes=%s",
                     ret_msg,
+                    [h[:16] for h in mm_hash_list],
                 )
-                return
+                transfer_failed = True
+        except zmq.Again:
+            logger.error(
+                "[EC_WORKER_RECEIVER] Transfer TIMEOUT after 10s for mm_hashes=%s",
+                [h[:16] for h in mm_hash_list],
+            )
+            transfer_failed = True
         except zmq.ContextTerminated:
             logger.debug(
                 "[EC_WORKER_RECEIVER] ZMQ context terminated, exiting receiver thread."
             )
-            return
+            transfer_failed = True
         except Exception as e:
             logger.exception(
-                "[EC_WORKER_RECEIVER] ✗ Transfer request failed: %s",
+                "[EC_WORKER_RECEIVER] ✗ Transfer request failed for mm_hashes=%s: %s",
+                [h[:16] for h in mm_hash_list],
                 e,
             )
-            return
+            transfer_failed = True
         finally:
             sock.close()
 
-        # Load tensors from received buffer
-        for (mm_hash, _), addr, num_bytes in zip(
-            metadata.mm_hashes, metadata.remote_mm_addrs, metadata.remote_token_bytes
-        ):
-            logger.debug(
-                "[EC_WORKER_RECEIVER] Loading mm_hash=%s from addr=0x%x, size=%d bytes",
-                mm_hash[:16],
-                addr,
-                num_bytes,
+        if transfer_failed:
+            # Mark these mm_hashes as failed
+            async with self.failed_recving_mm_hashes.lock:
+                self.failed_recving_mm_hashes.set.update(mm_hash_list)
+            logger.warning(
+                "[EC_WORKER_RECEIVER] Marked %d mm_hashes as failed: %s",
+                len(mm_hash_list),
+                [h[:16] for h in mm_hash_list],
             )
+            return
 
-            encoder_cache[mm_hash] = self.transfer_buffer.load_tensor(
-                addr,
-                self.dtype,
-                (num_bytes // self.byte_per_token, self.embed_size),
-                device=self.device_type,
-                copy=True,
+        # Load tensors from received buffer
+        try:
+            for (mm_hash, _), addr, num_bytes in zip(
+                metadata.mm_hashes,
+                metadata.remote_mm_addrs,
+                metadata.remote_token_bytes,
+            ):
+                logger.debug(
+                    "[EC_WORKER_RECEIVER] Loading mm_hash=%s from addr=0x%x, size=%d bytes",
+                    mm_hash[:16],
+                    addr,
+                    num_bytes,
+                )
+
+                encoder_cache[mm_hash] = self.transfer_buffer.load_tensor(
+                    addr,
+                    self.dtype,
+                    (num_bytes // self.byte_per_token, self.embed_size),
+                    device=self.device_type,
+                    copy=True,
+                )
+        except Exception as e:
+            logger.exception(
+                "[EC_WORKER_RECEIVER] ✗ Failed to load tensors for mm_hashes=%s: %s",
+                [h[:16] for h in mm_hash_list],
+                e,
             )
+            # Mark as failed
+            async with self.failed_recving_mm_hashes.lock:
+                self.failed_recving_mm_hashes.set.update(mm_hash_list)
+            return
 
         async with self.finished_recving_mm_hashes.finish_recv_cond:
-            mm_hashes = [mm_hash for (mm_hash, _) in mm_hashes]
-            self.finished_recving_mm_hashes.set.update(mm_hashes)
+            self.finished_recving_mm_hashes.set.update(mm_hash_list)
 
             if self.finished_recving_mm_hashes.set == self.mm_hashes_need_recv:
                 self.finished_recving_mm_hashes.finish_recv_cond.notify_all()

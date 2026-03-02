@@ -133,10 +133,15 @@ class Scheduler(SchedulerInterface):
             self.parallel_config.data_parallel_index,
         )
         self.ec_connector = None
+        self.recompute_ec_load_failures = True
         if self.vllm_config.ec_transfer_config is not None:
             self.ec_connector = ECConnectorFactory.create_connector(
                 config=self.vllm_config, role=ECConnectorRole.SCHEDULER
             )
+            ec_load_failure_policy = (
+                self.vllm_config.ec_transfer_config.ec_load_failure_policy
+            )
+            self.recompute_ec_load_failures = ec_load_failure_policy == "recompute"
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -171,6 +176,9 @@ class Scheduler(SchedulerInterface):
         # KV Connector: requests in process of async KV loading or recving
         self.finished_recving_kv_req_ids: set[str] = set()
         self.failed_recving_kv_req_ids: set[str] = set()
+
+        # EC Connector: track failed EC transfers for retry
+        self.failed_recving_ec_mm_hashes: set[str] = set()
 
         # Encoder-related.
         # Calculate encoder cache size if applicable
@@ -1267,6 +1275,16 @@ class Scheduler(SchedulerInterface):
                 kv_connector_output.invalid_block_ids
             )
 
+        # Handle EC transfer failures
+        ec_connector_output = model_runner_output.ec_connector_output
+        failed_ec_load_req_ids = None
+        if ec_connector_output and ec_connector_output.invalid_mm_hashes:
+            # These mm_hashes failed to load from remote encoder.
+            # Identify affected requests and fallback to local encoding.
+            failed_ec_load_req_ids = self._handle_invalid_ec_items(
+                ec_connector_output.invalid_mm_hashes
+            )
+
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
         # to avoid expensive operations inside the loop.
@@ -1276,6 +1294,9 @@ class Scheduler(SchedulerInterface):
             assert num_tokens_scheduled > 0
             if failed_kv_load_req_ids and req_id in failed_kv_load_req_ids:
                 # skip failed or rescheduled requests from KV load failure
+                continue
+            if failed_ec_load_req_ids and req_id in failed_ec_load_req_ids:
+                # skip failed or rescheduled requests from EC load failure
                 continue
             request = self.requests.get(req_id)
             if request is None:
@@ -2169,3 +2190,96 @@ class Scheduler(SchedulerInterface):
         self.failed_recving_kv_req_ids |= async_failed_req_ids
         # Return sync affected IDs to skip in update_from_output
         return sync_failed_req_ids
+
+    def _handle_invalid_ec_items(self, invalid_mm_hashes: set[str]) -> set[str]:
+        """
+        Handle requests affected by invalid EC cache items (mm_hashes).
+
+        Similar to _handle_invalid_blocks(), we rollback num_computed_tokens
+        to before the failed mm_hash position, so the request will be rescheduled
+        for local encoding.
+
+        When EC transfer fails, we have two options based on ec_load_failure_policy:
+        1. recompute (default): Rollback num_computed_tokens to trigger local encoding
+        2. fail: Immediately fail the request with an error
+
+        Returns:
+            Set of affected request IDs to skip in update_from_output main loop.
+        """
+        if not invalid_mm_hashes:
+            return set()
+
+        should_fail = not self.recompute_ec_load_failures
+
+        # Find all requests that reference these failed mm_hashes
+        # and calculate rollback positions
+        affected_requests: dict[str, int] = {}  # req_id -> rollback_position
+
+        for req_id, request in self.requests.items():
+            if not hasattr(request, "mm_features") or not request.mm_features:
+                continue
+
+            # Find the earliest failed mm_hash position in this request
+            min_rollback_pos = None
+            for mm_feature in request.mm_features:
+                if mm_feature.identifier in invalid_mm_hashes:
+                    # mm_position.offset is the start position of this mm_hash
+                    rollback_pos = mm_feature.mm_position.offset
+                    if min_rollback_pos is None or rollback_pos < min_rollback_pos:
+                        min_rollback_pos = rollback_pos
+
+            if min_rollback_pos is not None:
+                affected_requests[req_id] = min_rollback_pos
+
+        if not affected_requests:
+            return set()
+
+        if should_fail:
+            # Fail policy: immediately fail affected requests
+            logger.error(
+                "Failing %d request(s) due to EC load failure "
+                "(failure_policy=fail, %d mm_hashes affected). Request IDs: %s",
+                len(affected_requests),
+                len(invalid_mm_hashes),
+                set(affected_requests.keys()),
+            )
+            self.finish_requests(
+                set(affected_requests.keys()), RequestStatus.FINISHED_ERROR
+            )
+            return set(affected_requests.keys())
+
+        # Recompute policy: rollback num_computed_tokens to trigger local encoding
+        logger.warning(
+            "Recovered from EC load failure: "
+            "%d request(s) will be rescheduled for local encoding (%d mm_hashes affected).",
+            len(affected_requests),
+            len(invalid_mm_hashes),
+        )
+
+        # Track failed mm_hashes for monitoring
+        self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
+
+        # Rollback num_computed_tokens to trigger recomputation
+        for req_id, rollback_pos in affected_requests.items():
+            request = self.requests[req_id]
+            old_computed = request.num_computed_tokens
+
+            # Rollback to the position before the failed mm_hash
+            request.num_computed_tokens = rollback_pos
+
+            logger.debug(
+                "Rolled back req_id=%s: num_computed_tokens %d -> %d",
+                req_id[:16],
+                old_computed,
+                rollback_pos,
+            )
+
+            # Clear do_remote_encode flag to prevent retry of failed transfer
+            if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
+                for mm_hash in invalid_mm_hashes:
+                    if mm_hash in request.ec_transfer_params:
+                        request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
+
+        # Return affected IDs to skip in update_from_output
+        # (they will be rescheduled for local encoding)
+        return set(affected_requests.keys())

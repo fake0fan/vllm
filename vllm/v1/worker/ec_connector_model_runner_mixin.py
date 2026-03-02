@@ -37,10 +37,10 @@ class ECConnectorModelRunnerMixin:
     @staticmethod
     def get_finished_ec_transfers(
         scheduler_output: "SchedulerOutput",
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         if has_ec_transfer():
             return get_ec_transfer().get_finished(scheduler_output.finished_req_ids)
-        return None, None
+        return None, None, None
 
     @staticmethod
     def maybe_get_ec_connector_output(
@@ -85,8 +85,10 @@ class ECConnectorModelRunnerMixin:
         try:
             yield output
         finally:
-            output.finished_sending, output.finished_recving = (
-                ec_connector.get_finished(scheduler_output.finished_req_ids)
-            )
+            (
+                output.finished_sending,
+                output.finished_recving,
+                output.invalid_mm_hashes,
+            ) = ec_connector.get_finished(scheduler_output.finished_req_ids)
             ec_connector.maybe_update_remote_cache_state(encoder_cache)
             ec_connector.clear_connector_metadata()

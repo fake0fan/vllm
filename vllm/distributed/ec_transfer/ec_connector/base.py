@@ -183,7 +183,7 @@ class ECConnectorBase(ABC):
 
     def get_finished(
         self, finished_req_ids: set[str]
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         """
         Notifies worker-side connector ids of requests that have
         finished generating tokens on the worker.
@@ -191,13 +191,12 @@ class ECConnectorBase(ABC):
         to track which workers are done.
 
         Returns:
-            ids of requests that have finished asynchronous transfer
-            (requests that previously returned True from request_finished()),
-            tuple of (sending/saving ids, recving/loading ids).
-            The finished saves/sends req ids must belong to a set provided in a
-            call to this method (this call or a prior one).
+            Tuple of (finished_sending, finished_recving, failed_recving).
+            - finished_sending: mm_hashes that finished sending
+            - finished_recving: mm_hashes that finished receiving successfully
+            - failed_recving: mm_hashes that failed to receive
         """
-        return None, None
+        return None, None, None
 
     # ==============================
     # Scheduler-side methods
