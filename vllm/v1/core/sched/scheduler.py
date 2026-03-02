@@ -776,15 +776,6 @@ class Scheduler(SchedulerInterface):
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
 
-                logger.info("[Scheduler] request.request_id: %s", request.request_id)
-                logger.info(
-                    "[Scheduler] encoder_inputs_to_schedule: %s",
-                    encoder_inputs_to_schedule,
-                )
-                logger.info(
-                    "[Scheduler] external_load_encoder_input: %s",
-                    external_load_encoder_input,
-                )
                 # Encoder-related.
                 if encoder_inputs_to_schedule:
                     scheduled_encoder_inputs[request.request_id] = (

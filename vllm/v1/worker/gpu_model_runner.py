@@ -2437,7 +2437,7 @@ class GPUModelRunner(
         # Cache the encoder outputs by mm_hash
         for mm_hash, output in zip(mm_hashes, encoder_outputs):
             self.encoder_cache[mm_hash] = output
-            logger.info("[GPU Model Runner] Finish execute for mm hash %s", mm_hash)
+            logger.debug("[GPU Model Runner] Finish execute for mm hash %s", mm_hash)
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         return encoder_outputs
