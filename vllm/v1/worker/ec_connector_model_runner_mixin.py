@@ -90,5 +90,5 @@ class ECConnectorModelRunnerMixin:
                 output.finished_recving,
                 output.invalid_mm_hashes,
             ) = ec_connector.get_finished(scheduler_output.finished_req_ids)
-            ec_connector.maybe_update_remote_cache_state(encoder_cache)
+            ec_connector.sync_encoder_caches_to_buffer(encoder_cache)
             ec_connector.clear_connector_metadata()

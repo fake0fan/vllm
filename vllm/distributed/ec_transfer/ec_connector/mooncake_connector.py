@@ -232,12 +232,14 @@ class MooncakeECConnector(ECConnectorBase):
         assert self.connector_worker is not None
         return self.connector_worker.get_finished(finished_req_ids)
 
-    def maybe_update_remote_cache_state(self, encoder_cache, **kwargs) -> None:
+    def sync_encoder_caches_to_buffer(self, encoder_cache, **kwargs) -> None:
         """
-        Maybe update the remote cache state based on the local encoder cache.
+        Synchronize encoder caches from EncoderCacheManager to transfer buffer.
 
-        This method can be used to synchronize or update the state of the
-        remote cache based on changes in the local encoder cache.
+        This method ensures that encoder caches present in EncoderCacheManager
+        are also available in the transfer buffer for remote access. It is called
+        after each model execution to handle cases where caches were reused from
+        EncoderCacheManager without being freshly computed.
 
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal
@@ -247,7 +249,7 @@ class MooncakeECConnector(ECConnectorBase):
         metadata: ECConnectorMetadata = self._get_connector_metadata()
         assert isinstance(metadata, MooncakeECConnectorMetadata)
 
-        return self.connector_worker.maybe_update_remote_cache_state(
+        return self.connector_worker.sync_encoder_caches_to_buffer(
             encoder_cache, metadata
         )
 
@@ -479,9 +481,14 @@ class MooncakeECConnectorWorker:
                 "transfer_buffer_size", self.DEFAULT_BUFFER_SIZE
             )
         )
+        self._buffer_device = (
+            vllm_config.ec_transfer_config.ec_connector_extra_config.get(
+                "transfer_buffer_device", "cpu"
+            )
+        )
         self.transfer_buffer: EncoderCacheTransferBuffer = EncoderCacheTransferBuffer(
             buffer_size=self._buffer_size,
-            device="cpu",
+            device=self._buffer_device,
         )
 
         # stored addr of mm tensor in registered caches (external tensor pool)
@@ -503,8 +510,9 @@ class MooncakeECConnectorWorker:
 
         logger.info(
             "Initialized and registered EC transfer buffer: size=%d bytes, "
-            "base_addr=0x%x",
+            "device=%s, base_addr=0x%x",
             self._buffer_size,
+            self._buffer_device,
             self.transfer_buffer.base_address,
         )
 
@@ -902,7 +910,8 @@ class MooncakeECConnectorWorker:
                 metadata.remote_token_bytes,
             ):
                 logger.debug(
-                    "[EC_WORKER_RECEIVER] Loading mm_hash=%s from addr=0x%x, size=%d bytes",
+                    "[EC_WORKER_RECEIVER] Loading mm_hash=%s from addr=0x%x, \
+                        size=%d bytes",
                     mm_hash[:16],
                     addr,
                     num_bytes,
@@ -1001,25 +1010,29 @@ class MooncakeECConnectorWorker:
         with self._mm_lock:
             return identifier in self.local_mm_addrs
 
-    def maybe_update_remote_cache_state(
+    def sync_encoder_caches_to_buffer(
         self, encoder_cache, metadata: MooncakeECConnectorMetadata, **kwargs
     ) -> None:
+        """
+        Synchronize encoder caches from EncoderCacheManager to transfer buffer.
+
+        This ensures that caches present in EncoderCacheManager but not yet
+        in the transfer buffer are saved for remote access.
+        """
+        # Early exit if not producer or no caches to save
+        if not self.is_producer or not metadata.mm_hashes_to_save:
+            return
+
         for mm_hash in metadata.mm_hashes_to_save:
-            # make sure is producer, and mm_hash exists in local
-            # EncodeCacheManager encoder cache
-            if (not self.is_producer) or (mm_hash not in encoder_cache):
+            # Skip if not in EncoderCacheManager
+            if mm_hash not in encoder_cache:
                 continue
 
-            # Check if external storage doesn't have it but HBM does
-            if not self.has_cache_in_buffer(mm_hash):
-                logger.debug(
-                    "update_remote_cache_state for hash %s",
-                    mm_hash,
-                )
-                self.save_caches(
-                    encoder_cache=encoder_cache,
-                    mm_hash=mm_hash,
-                )
+            # Skip if already in transfer buffer
+            if self.has_cache_in_buffer(mm_hash):
+                continue
+
+            self.save_caches(encoder_cache=encoder_cache, mm_hash=mm_hash)
 
 
 def get_mooncake_side_channel_port(vllm_config: VllmConfig) -> int:

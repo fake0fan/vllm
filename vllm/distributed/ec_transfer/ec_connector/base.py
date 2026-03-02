@@ -159,14 +159,16 @@ class ECConnectorBase(ABC):
         pass
 
     @abstractmethod
-    def maybe_update_remote_cache_state(
+    def sync_encoder_caches_to_buffer(
         self, encoder_cache: dict[str, torch.Tensor]
     ) -> None:
         """
-        Maybe update the remote cache state based on the local encoder cache.
+        Synchronize encoder caches from EncoderCacheManager to transfer buffer.
 
-        This method can be used to synchronize or update the state of the
-        remote cache based on changes in the local encoder cache.
+        This method ensures that encoder caches present in EncoderCacheManager
+        are also available in the transfer buffer for remote access. It is called
+        after each model execution to handle cases where caches were reused from
+        EncoderCacheManager without being freshly computed.
 
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal

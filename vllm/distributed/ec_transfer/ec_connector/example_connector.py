@@ -149,27 +149,33 @@ class ECExampleConnector(ECConnectorBase):
         # Insert mm_hash only if this block has not been recorded yet.
         self._mm_datas_need_loads[mm_hash] = num_encoder_token
 
-    def maybe_update_remote_cache_state(self, encoder_cache, **kwargs) -> None:
+    def sync_encoder_caches_to_buffer(self, encoder_cache, **kwargs) -> None:
+        """
+        Synchronize encoder caches from EncoderCacheManager to external storage.
+
+        This ensures that caches present in EncoderCacheManager but not yet
+        in external storage are saved for remote access.
+        """
         metadata: ECConnectorMetadata = self._get_connector_metadata()
         assert isinstance(metadata, ECExampleConnectorMetadata)
 
+        # Early exit if not producer or no caches to sync
+        if not self.is_producer or not metadata.mm_datas:
+            return
+
         for mm_data in metadata.mm_datas:
-            # make sure is producer, and mm_hash exists in local
-            # EncodeCacheManager encoder cache
-            if (not self.is_producer) or (mm_data.mm_hash not in encoder_cache):
+            # Skip if not in EncoderCacheManager
+            if mm_data.mm_hash not in encoder_cache:
                 continue
 
-            # Check if external storage doesn't have it but EncodeCacheManager
-            # does
-            if not self.has_cache_item(mm_data.mm_hash):
-                logger.debug(
-                    "update_remote_cache_state for hash %s",
-                    mm_data.mm_hash,
-                )
-                self.save_caches(
-                    encoder_cache=encoder_cache,
-                    mm_hash=mm_data.mm_hash,
-                )
+            # Skip if already in external storage
+            if self.has_cache_item(mm_data.mm_hash):
+                continue
+
+            self.save_caches(
+                encoder_cache=encoder_cache,
+                mm_hash=mm_data.mm_hash,
+            )
 
     def build_connector_meta(
         self,
