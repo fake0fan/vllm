@@ -175,9 +175,14 @@ class ECConnectorBase(ABC):
         pass
 
     @abstractmethod
-    def wait_for_load(self) -> None:
+    def wait_for_load(self) -> set[str]:
         """
-        Wait until ec tensors are loaded before they are able to be gathered/used
+        Wait until ec tensors are loaded before they are able to be gathered/used.
+
+        Returns:
+            Set of mm_hashes whose EC transfer failed. The caller should skip
+            the assertion for these hashes; the scheduler will reschedule the
+            affected requests via invalid_mm_hashes in ECConnectorOutput.
         """
         pass
 

@@ -2462,10 +2462,12 @@ class GPUModelRunner(
         should_sync_mrope_positions = False
         should_sync_xdrope_positions = False
 
-        self.maybe_wait_for_ec_load()
+        ec_failed_mm_hashes = self.maybe_wait_for_ec_load()
+        logger.debug(f"hero: ec_failed_mm_hashes after maybe_wait_for_ec_load: {ec_failed_mm_hashes}")
 
         for req_id in self.input_batch.req_ids:
             mm_embeds_req: list[torch.Tensor] = []
+            has_ec_failure = False
 
             num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
             req_state = self.requests[req_id]
@@ -2504,7 +2506,21 @@ class GPUModelRunner(
 
                 mm_hash = mm_feature.identifier
                 encoder_output = self.encoder_cache.get(mm_hash, None)
-                assert encoder_output is not None, f"Encoder cache miss for {mm_hash}."
+                if encoder_output is None:
+                    if mm_hash in ec_failed_mm_hashes:
+                        # EC transfer failed. Clear any mm_embed flags already
+                        # set for this request; the scheduler will reschedule it
+                        # via invalid_mm_hashes -> _handle_invalid_ec_items().
+                        is_mm_embed[
+                            req_start_idx : req_start_idx + num_scheduled_tokens
+                        ] = False
+                        mm_embeds_req.clear()
+                        has_ec_failure = True
+                        logger.debug(f"hero: mm_hash {mm_hash} in ec_failed_mm_hashes; Break")
+                        break
+                    assert encoder_output is not None, (
+                        f"Encoder cache miss for {mm_hash}."
+                    )
 
                 if (is_embed := pos_info.is_embed) is not None:
                     is_embed = is_embed[start_idx:end_idx]
@@ -2524,21 +2540,23 @@ class GPUModelRunner(
                     ] |= is_embed
                 mm_embeds_req.append(mm_embeds_item)
 
-            if self.is_multimodal_pruning_enabled and self.uses_mrope:
-                assert req_state.mrope_positions is not None
-                should_sync_mrope_positions = True
-                mm_embeds_req, new_mrope_positions, new_delta = (
-                    self.model.recompute_mrope_positions(
-                        input_ids=req_state.prompt_token_ids,
-                        multimodal_embeddings=mm_embeds_req,
-                        mrope_positions=req_state.mrope_positions,
-                        num_computed_tokens=req_state.num_computed_tokens,
+            if not has_ec_failure:
+                if self.is_multimodal_pruning_enabled and self.uses_mrope:
+                    assert req_state.mrope_positions is not None
+                    should_sync_mrope_positions = True
+                    mm_embeds_req, new_mrope_positions, new_delta = (
+                        self.model.recompute_mrope_positions(
+                            input_ids=req_state.prompt_token_ids,
+                            multimodal_embeddings=mm_embeds_req,
+                            mrope_positions=req_state.mrope_positions,
+                            num_computed_tokens=req_state.num_computed_tokens,
+                        )
                     )
-                )
-                req_state.mrope_positions.copy_(new_mrope_positions)
-                req_state.mrope_position_delta = new_delta
+                    req_state.mrope_positions.copy_(new_mrope_positions)
+                    req_state.mrope_position_delta = new_delta
 
-            mm_embeds.extend(mm_embeds_req)
+                mm_embeds.extend(mm_embeds_req)
+
             req_start_idx += num_scheduled_tokens
 
         is_mm_embed = is_mm_embed_buf.copy_to_gpu(total_num_scheduled_tokens)

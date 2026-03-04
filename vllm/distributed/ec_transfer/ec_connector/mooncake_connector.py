@@ -214,7 +214,7 @@ class MooncakeECConnector(ECConnectorBase):
 
         self.connector_worker.start_load_caches(encoder_cache, metadata)
 
-    def wait_for_load(self) -> None:
+    def wait_for_load(self) -> set[str]:
         assert self.connector_worker is not None
         return self.connector_worker.wait_for_load()
 
@@ -1024,11 +1024,15 @@ class MooncakeECConnectorWorker:
             )
         logger.debug(f"hero: _wait_for_load done")
 
-    def wait_for_load(self) -> None:
+    def wait_for_load(self) -> set[str]:
         fut = asyncio.run_coroutine_threadsafe(
             self._wait_for_load(), self.receiver_loop
         )
         fut.result()  # Block until complete
+        # Return a snapshot of failed hashes so the caller can skip the
+        # assertion and let the scheduler reschedule affected requests.
+        # get_finished() will clear the live set later.
+        return set(self.failed_recving_mm_hashes.set)
 
     def has_cache_in_buffer(
         self,

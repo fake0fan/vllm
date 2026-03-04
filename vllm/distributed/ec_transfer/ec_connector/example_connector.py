@@ -100,8 +100,8 @@ class ECExampleConnector(ECConnectorBase):
             encoder_cache[mm_data.mm_hash] = ec_cache
             logger.debug("Success load encoder cache for hash %s", mm_data.mm_hash)
 
-    def wait_for_load(self):
-        return
+    def wait_for_load(self) -> set[str]:
+        return set()
 
     def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
         """

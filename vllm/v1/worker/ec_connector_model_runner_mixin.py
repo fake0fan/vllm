@@ -57,11 +57,17 @@ class ECConnectorModelRunnerMixin:
         )
 
     @staticmethod
-    def maybe_wait_for_ec_load():
+    def maybe_wait_for_ec_load() -> set[str]:
+        """Wait for EC loads to complete.
+
+        Returns:
+            Set of mm_hashes that failed to load. Empty set if no EC transfer
+            is configured or all transfers succeeded.
+        """
         if not has_ec_transfer():
-            return
+            return set()
         connector = get_ec_transfer()
-        connector.wait_for_load()
+        return connector.wait_for_load()
 
     # This context manager must be used within an active forward context.
     # It encapsulates the entire EC connector lifecycle within execute_model
