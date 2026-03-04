@@ -163,13 +163,6 @@ class ECConnectorBase(ABC):
         """
         pass
 
-    @abstractmethod
-    def wait_for_load(self) -> None:
-        """
-        Wait until any in-flight cache loads complete.
-        """
-        pass
-
     def maybe_update_remote_cache_state(
         self, encoder_cache: dict[str, torch.Tensor]
     ) -> None:
@@ -179,6 +172,18 @@ class ECConnectorBase(ABC):
         Connectors that do not need this hook can rely on the default no-op.
         """
         return
+
+    @abstractmethod
+    def wait_for_load(self) -> set[str]:
+        """
+        Wait until ec tensors are loaded before they are able to be gathered/used.
+
+        Returns:
+            Set of mm_hashes whose EC transfer failed. The caller should skip
+            the assertion for these hashes; the scheduler will reschedule the
+            affected requests via invalid_mm_hashes in ECConnectorOutput.
+        """
+        pass
 
     def get_finished(
         self, finished_req_ids: set[str]
