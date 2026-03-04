@@ -292,6 +292,7 @@ class MooncakeECConnectorScheduler:
             has_remote_port = mm_hash_params.get("remote_port") is not None
             do_remote_encode = mm_hash_params.get("do_remote_encode", False)
 
+            logger.debug(f"hero: mm_hash_params {has_remote_host}, {has_remote_port}, {do_remote_encode} for identifier {identifier}")
             return has_remote_host and has_remote_port and do_remote_encode
 
         except Exception as e:
@@ -344,6 +345,11 @@ class MooncakeECConnectorScheduler:
             if ec_transfer_params:
                 mm_hash_params = ec_transfer_params.get(mm_hash)
                 if mm_hash_params:
+                    ############ hero ##########
+                    # logger.debug(f"hero: before force change mm_hash {mm_hash}")
+                    # mm_hash = "xxxyyy" + mm_hash
+                    # logger.debug(f"hero: now force change mm_hash into {mm_hash}")
+                    ############ hero ##########
                     meta.add_recv_req(
                         req_id=request.request_id,
                         mm_hash=mm_hash,
@@ -352,7 +358,8 @@ class MooncakeECConnectorScheduler:
                             mm_addr=0,
                         ),
                         remote_host=mm_hash_params["remote_host"],
-                        remote_port=mm_hash_params["remote_port"],
+                        # remote_port=mm_hash_params["remote_port"], # !!!!!!!!!!!hero change it
+                        remote_port=1234,   # hero
                     )
 
         # Clear the lists once workers start the transfers
@@ -758,6 +765,7 @@ class MooncakeECConnectorWorker:
         Returns:
             Tuple of (finished_mm_hashes, failed_mm_hashes)
         """
+        logger.debug(f"hero: fetch_finished_recving_mm_hashes")
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             finished_recving_mm_hashes = self.finished_recving_mm_hashes.set
             self.finished_recving_mm_hashes.set = set()
@@ -766,6 +774,7 @@ class MooncakeECConnectorWorker:
             failed_recving_mm_hashes = self.failed_recving_mm_hashes.set
             self.failed_recving_mm_hashes.set = set()
 
+        logger.debug(f"hero: finished_recving_mm_hashes, failed_recving_mm_hashes {finished_recving_mm_hashes, failed_recving_mm_hashes}")
         return finished_recving_mm_hashes, failed_recving_mm_hashes
 
     def get_finished(
@@ -779,6 +788,7 @@ class MooncakeECConnectorWorker:
         Returns:
             Tuple of (finished_sending, finished_recving, failed_recving)
         """
+        logger.debug(f"hero: get_finished for finished_req_ids: {finished_req_ids}")
         fut = None
         if not self.is_producer:
             fut = asyncio.run_coroutine_threadsafe(
@@ -813,7 +823,7 @@ class MooncakeECConnectorWorker:
                 len(finished_recving_mm_hashes),
                 len(failed_recving_mm_hashes),
             )
-
+        logger.debug(f"hero: get_finished done")
         return (
             finished_sending_mm_hashes or None,
             finished_recving_mm_hashes or None,
@@ -838,6 +848,8 @@ class MooncakeECConnectorWorker:
                 meta.num_encoder_tokens * self.byte_per_token for meta in mm_hashes_meta
             ],
         )
+
+        logger.debug(f"hero: start receive_ec for mm_hashes {mm_hashes}; metadata: {metadata}")
 
         encoded_data = self._encoder.encode(metadata)
 
@@ -892,6 +904,10 @@ class MooncakeECConnectorWorker:
                 len(mm_hash_list),
                 [h[:16] for h in mm_hash_list],
             )
+            async with self.finished_recving_mm_hashes.finish_recv_cond:
+                logger.debug(f"hero: 1st _all_mm_hashes_resolved")
+                if self._all_mm_hashes_resolved():
+                    self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
             return
 
         # Load tensors from received buffer
@@ -924,12 +940,16 @@ class MooncakeECConnectorWorker:
             # Mark as failed
             async with self.failed_recving_mm_hashes.lock:
                 self.failed_recving_mm_hashes.set.update(mm_hash_list)
+            async with self.finished_recving_mm_hashes.finish_recv_cond:
+                logger.debug(f"hero: 2nd _all_mm_hashes_resolved")
+                if self._all_mm_hashes_resolved():
+                    self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
             return
 
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             self.finished_recving_mm_hashes.set.update(mm_hash_list)
-
-            if self.finished_recving_mm_hashes.set == self.mm_hashes_need_recv:
+            logger.debug(f"hero: 3rd _all_mm_hashes_resolved")
+            if self._all_mm_hashes_resolved():
                 self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
 
     def group_ec_pull(self, metadata: MooncakeECConnectorMetadata):
@@ -970,22 +990,39 @@ class MooncakeECConnectorWorker:
         )
 
         ec_pulls = self.group_ec_pull(metadata)
-
+        logger.debug(f"hero: ec_pulls.items(): {ec_pulls.items()}")
         for path, mm_hashes_meta in ec_pulls.items():
             mm_hash_items = [
                 ((mm_hash, req_ids), meta)
                 for mm_hash, (req_ids, meta) in mm_hashes_meta.items()
             ]
-
+            logger.debug(f"hero: start_load_caches for mm_hash_items {mm_hash_items}")
             asyncio.run_coroutine_threadsafe(
                 self.receive_ec(path, mm_hash_items, encoder_cache), self.receiver_loop
             )
+            logger.debug(f"hero after self.receive_ec")
+
+    def _all_mm_hashes_resolved(self) -> bool:
+        """Return True when every hash in mm_hashes_need_recv has reached a
+        terminal state — either successfully received or failed."""
+        ############ hero ##########
+        # return (
+        #     self.finished_recving_mm_hashes.set | self.failed_recving_mm_hashes.set
+        # ) == self.mm_hashes_need_recv
+        resolved = (
+            self.finished_recving_mm_hashes.set | self.failed_recving_mm_hashes.set
+        ) == self.mm_hashes_need_recv
+        logger.debug(f"hero: _all_mm_hashes_resolved: {resolved}, {self.finished_recving_mm_hashes.set}, {self.failed_recving_mm_hashes.set}, {self.mm_hashes_need_recv}")
+        return resolved
+        ############ hero ##########
 
     async def _wait_for_load(self) -> None:
+        logger.debug(f"hero: _wait_for_load start")
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             await self.finished_recving_mm_hashes.finish_recv_cond.wait_for(
-                lambda: self.finished_recving_mm_hashes.set == self.mm_hashes_need_recv
+                self._all_mm_hashes_resolved
             )
+        logger.debug(f"hero: _wait_for_load done")
 
     def wait_for_load(self) -> None:
         fut = asyncio.run_coroutine_threadsafe(

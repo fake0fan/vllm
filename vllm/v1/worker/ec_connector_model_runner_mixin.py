@@ -83,12 +83,16 @@ class ECConnectorModelRunnerMixin:
             ec_connector.start_load_caches(encoder_cache, **kwargs)
 
         try:
+            logger.debug(f"hero: before yield output")
             yield output
+            logger.debug(f"hero: after yield output")
         finally:
+            logger.debug(f"hero: before get_finished")
             (
                 output.finished_sending,
                 output.finished_recving,
                 output.invalid_mm_hashes,
             ) = ec_connector.get_finished(scheduler_output.finished_req_ids)
             ec_connector.maybe_update_remote_cache_state(encoder_cache)
+            logger.debug(f"after get_finished")
             ec_connector.clear_connector_metadata()
