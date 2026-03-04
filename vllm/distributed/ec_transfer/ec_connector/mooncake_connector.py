@@ -896,6 +896,16 @@ class MooncakeECConnectorWorker:
             sock.close()
 
         if transfer_failed:
+            # Free the receive buffer slots allocated in group_ec_pull().
+            # The remote side never wrote valid data into them (or the
+            # transfer was incomplete), so release the space immediately
+            # rather than waiting for LRU eviction.
+            for meta in mm_hashes_meta:
+                try:
+                    self.transfer_buffer.free(meta.mm_addr)
+                except Exception as e:
+                    logger.warning("Unable to free buffer space at %d. %s", meta.mm_addr, e)
+
             # Mark these mm_hashes as failed
             async with self.failed_recving_mm_hashes.lock:
                 self.failed_recving_mm_hashes.set.update(mm_hash_list)
@@ -937,6 +947,15 @@ class MooncakeECConnectorWorker:
                 [h[:16] for h in mm_hash_list],
                 e,
             )
+            # Free all receive buffer slots. Some entries may have been
+            # partially loaded (written to encoder_cache) before the exception;
+            # their GPU entries will be cleaned up via freed/free_encoder_mm_hashes.
+            for addr in metadata.remote_mm_addrs:
+                try:
+                    self.transfer_buffer.free(addr)
+                except Exception:
+                    logger.warning("Unable to free buffer space at %d. %s", meta.mm_addr, e)
+
             # Mark as failed
             async with self.failed_recving_mm_hashes.lock:
                 self.failed_recving_mm_hashes.set.update(mm_hash_list)

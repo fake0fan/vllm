@@ -2202,25 +2202,17 @@ class Scheduler(SchedulerInterface):
 
         should_fail = not self.recompute_ec_load_failures
 
-        # Find all requests that reference these failed mm_hashes
-        # and calculate rollback positions
-        affected_requests: dict[str, int] = {}  # req_id -> rollback_position
+        # Find all requests that reference these failed mm_hashes.
+        affected_requests: set[str] = set()
 
         for req_id, request in self.requests.items():
             if not hasattr(request, "mm_features") or not request.mm_features:
                 continue
 
-            # Find the earliest failed mm_hash position in this request
-            min_rollback_pos = None
             for mm_feature in request.mm_features:
                 if mm_feature.identifier in invalid_mm_hashes:
-                    # mm_position.offset is the start position of this mm_hash
-                    rollback_pos = mm_feature.mm_position.offset
-                    if min_rollback_pos is None or rollback_pos < min_rollback_pos:
-                        min_rollback_pos = rollback_pos
-
-            if min_rollback_pos is not None:
-                affected_requests[req_id] = min_rollback_pos
+                    affected_requests.add(req_id)
+                    break
 
         if not affected_requests:
             return set()
@@ -2232,14 +2224,13 @@ class Scheduler(SchedulerInterface):
                 "(failure_policy=fail, %d mm_hashes affected). Request IDs: %s",
                 len(affected_requests),
                 len(invalid_mm_hashes),
-                set(affected_requests.keys()),
+                affected_requests,
             )
-            self.finish_requests(
-                set(affected_requests.keys()), RequestStatus.FINISHED_ERROR
-            )
-            return set(affected_requests.keys())
+            self.finish_requests(affected_requests, RequestStatus.FINISHED_ERROR)
+            return affected_requests
 
-        # Recompute policy: rollback num_computed_tokens to trigger local encoding
+        # Recompute policy: invalidate failed EC hashes so the scheduler
+        # re-schedules local encoding for them in the next step.
         logger.warning(
             "Recovered from EC load failure: "
             "%d request(s) will be rescheduled for local encoding (%d mm_hashes affected).",
@@ -2247,30 +2238,26 @@ class Scheduler(SchedulerInterface):
             len(invalid_mm_hashes),
         )
 
-        # Track failed mm_hashes for monitoring
+        # Track failed mm_hashes for monitoring.
         self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
 
-        # Rollback num_computed_tokens to trigger recomputation
-        for req_id, rollback_pos in affected_requests.items():
+        for req_id in affected_requests:
             request = self.requests[req_id]
-            old_computed = request.num_computed_tokens
 
-            # Rollback to the position before the failed mm_hash
-            request.num_computed_tokens = rollback_pos
+            # Invalidate every failed mm_hash in this request.
+            # This removes the entry from encoder_cache_manager entirely so
+            # check_and_update_cache() returns False next step, causing the
+            # scheduler to re-schedule local encoding (can_allocate + allocate).
+            for i, mm_feature in enumerate(request.mm_features):
+                if mm_feature.identifier in invalid_mm_hashes:
+                    self.encoder_cache_manager.invalidate_ec_failed(request, i)
 
-            logger.debug(
-                "Rolled back req_id=%s: num_computed_tokens %d -> %d",
-                req_id[:16],
-                old_computed,
-                rollback_pos,
-            )
-
-            # Clear do_remote_encode flag to prevent retry of failed transfer
+            # Clear do_remote_encode to prevent retrying the failed EC transfer.
             if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
                 for mm_hash in invalid_mm_hashes:
                     if mm_hash in request.ec_transfer_params:
                         request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
 
         # Return affected IDs to skip in update_from_output
-        # (they will be rescheduled for local encoding)
+        # (they will be rescheduled for local encoding next step).
         return set(affected_requests.keys())

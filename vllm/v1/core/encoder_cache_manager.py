@@ -265,6 +265,58 @@ class EncoderCacheManager:
         for input_id in input_ids:
             self.free_encoder_input(request, input_id)
 
+    def invalidate_ec_failed(self, request: "Request", input_id: int) -> None:
+        """Force-invalidate an EC-failed mm_hash, removing it from the cache
+        entirely so that local re-encoding is triggered in the next step.
+
+        Unlike free_encoder_input(), which only drops one request's reference
+        and defers physical eviction, this method:
+        - Deletes the mm_hash from self.cached completely so that
+          check_and_update_cache() returns False and the scheduler re-schedules
+          local encoding for this input.
+        - Restores num_free_slots (the physical slot is immediately available).
+        - Appends to self.freed so workers evict the corresponding GPU
+          encoder_cache entry via free_encoder_mm_hashes in the next
+          SchedulerOutput. Workers use encoder_cache.pop(mm_hash, None), so a
+          missing entry (EC transfer never wrote to GPU cache) is handled safely.
+
+        Safe to call multiple times for the same mm_hash (idempotent after the
+        first call removes the entry).
+
+        Args:
+            request: The request that owns this encoder input.
+            input_id: Index of the multimodal input within request.mm_features.
+        """
+        mm_hash = request.mm_features[input_id].identifier
+        if mm_hash not in self.cached:
+            return
+
+        num_encoder_embeds = request.get_num_encoder_embeds(input_id)
+
+        if mm_hash in self.freeable:
+            # Entry is unreferenced (previously freed by free_encoder_input).
+            # Remove from freeable; num_free_slots restoration below brings the
+            # physical slot back into the available pool.
+            # num_freeable_slots invariant (= num_free_slots + Σfreeable) stays
+            # correct: freeable shrinks by N while num_free_slots grows by N.
+            self.freeable.pop(mm_hash)
+        else:
+            # Entry is actively referenced. Restore the freeable-slots capacity
+            # that was consumed at allocate() time.
+            self.num_freeable_slots += num_encoder_embeds
+
+        # Restore physical slot in both cases.
+        self.num_free_slots += num_encoder_embeds
+
+        del self.cached[mm_hash]
+
+        # Tell workers to pop this entry from their GPU encoder_cache.
+        # Note: GPU-side pop happens at the start of the NEXT execute_model()
+        # call when the worker processes free_encoder_mm_hashes from the
+        # SchedulerOutput. encoder_cache.pop(mm_hash, None) is used, so a
+        # missing entry (EC transfer never wrote to GPU cache) is safe.
+        self.freed.append(mm_hash)
+
     def get_freed_mm_hashes(self) -> list[str]:
         """Get and clear the list of recently freed encoder cache entries.
 
