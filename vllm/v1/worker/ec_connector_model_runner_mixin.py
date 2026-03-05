@@ -97,8 +97,13 @@ class ECConnectorModelRunnerMixin:
             (
                 output.finished_sending,
                 output.finished_recving,
-                output.invalid_mm_hashes,
+                connector_invalid_hashes,
             ) = ec_connector.get_finished(scheduler_output.finished_req_ids)
+            # Merge connector-reported failures with any stale cache misses
+            # that were detected during _gather_mm_embeddings and pre-populated
+            # into output.invalid_mm_hashes before this finally block ran.
+            if connector_invalid_hashes:
+                output.invalid_mm_hashes |= connector_invalid_hashes
             ec_connector.maybe_update_remote_cache_state(encoder_cache)
             logger.debug(f"after get_finished")
             ec_connector.clear_connector_metadata()

@@ -436,6 +436,15 @@ class GPUModelRunner(
 
         # mm_hash ->  encoder_output
         self.encoder_cache: dict[str, torch.Tensor] = {}
+        # Persistent set of mm_hashes that failed to load via EC transfer and
+        # have not yet been re-encoded locally.  Used to protect the
+        # encoder-cache assertion in _gather_mm_embeddings against the
+        # scheduler/worker race where schedule() for step N+1 runs before
+        # update_from_output for step N has had a chance to call
+        # invalidate_ec_failed (so check_and_update_cache still returns True
+        # for the stale entry).  Only EC-related failures are tracked here;
+        # the assert still fires for any other unexpected cache miss.
+        self._ec_failed_unresolved: set[str] = set()
 
         self.use_aux_hidden_state_outputs = False
         # Set up speculative decoding.
@@ -896,6 +905,12 @@ class GPUModelRunner(
         # Free the cached encoder outputs.
         for mm_hash in scheduler_output.free_encoder_mm_hashes:
             self.encoder_cache.pop(mm_hash, None)
+            # Remove from EC failure tracking.  For EC-failed hashes this is
+            # populated by invalidate_ec_failed (which appends directly to
+            # freed, bypassing the freeable queue), so the discard arrives in
+            # the very next step.  encoder_cache.pop is a no-op for EC-failed
+            # hashes since a failed transfer never populates encoder_cache.
+            self._ec_failed_unresolved.discard(mm_hash)
 
         # Remove the unscheduled requests from the persistent batch.
         # NOTE(woosuk): The unscheduled requests are either preempted requests
@@ -2465,6 +2480,15 @@ class GPUModelRunner(
         ec_failed_mm_hashes = self.maybe_wait_for_ec_load()
         logger.debug(f"hero: ec_failed_mm_hashes after maybe_wait_for_ec_load: {ec_failed_mm_hashes}")
 
+        # Accumulate EC failures across steps so that the assert below is
+        # bypassed for hashes that are *known* to be EC-related (failed in this
+        # step OR failed in a previous step and not yet re-encoded locally).
+        self._ec_failed_unresolved |= ec_failed_mm_hashes
+        # Drop any hash that has since been successfully encoded locally
+        # (encoder_cache is populated by _execute_mm_encoder, which already
+        # ran above).
+        self._ec_failed_unresolved -= self.encoder_cache.keys()
+
         for req_id in self.input_batch.req_ids:
             mm_embeds_req: list[torch.Tensor] = []
             has_ec_failure = False
@@ -2507,17 +2531,32 @@ class GPUModelRunner(
                 mm_hash = mm_feature.identifier
                 encoder_output = self.encoder_cache.get(mm_hash, None)
                 if encoder_output is None:
-                    if mm_hash in ec_failed_mm_hashes:
-                        # EC transfer failed. Clear any mm_embed flags already
-                        # set for this request; the scheduler will reschedule it
-                        # via invalid_mm_hashes -> _handle_invalid_ec_items().
-                        is_mm_embed[
-                            req_start_idx : req_start_idx + num_scheduled_tokens
-                        ] = False
+                    if mm_hash in self._ec_failed_unresolved:
+                        # This hash is a known EC failure — either it failed
+                        # in the current step's wait_for_load, or it failed in
+                        # a previous step but the scheduler has not yet had a
+                        # chance to call invalidate_ec_failed (scheduler/worker
+                        # race where schedule() for this step ran before
+                        # update_from_output for the prior step).
+                        # In either case: skip the assert, clear embeddings
+                        # for this request, and let the caller report the full
+                        # _ec_failed_unresolved set to the scheduler so it can
+                        # invalidate stale cache entries and reschedule.
+                        if mm_hash not in ec_failed_mm_hashes:
+                            logger.warning(
+                                "Stale EC cache miss for %.16s (req %s) — "
+                                "rescheduling for local re-encoding.",
+                                mm_hash,
+                                req_id,
+                            )
+                        else:
+                            logger.debug(
+                                "hero: mm_hash %s in ec_failed_mm_hashes; continue",
+                                mm_hash,
+                            )
                         mm_embeds_req.clear()
                         has_ec_failure = True
-                        logger.debug(f"hero: mm_hash {mm_hash} in ec_failed_mm_hashes; Break")
-                        break
+                        continue
                     assert encoder_output is not None, (
                         f"Encoder cache miss for {mm_hash}."
                     )
@@ -2540,7 +2579,16 @@ class GPUModelRunner(
                     ] |= is_embed
                 mm_embeds_req.append(mm_embeds_item)
 
-            if not has_ec_failure:
+            if has_ec_failure:
+                # Reset the entire request's range in is_mm_embed.  Some mm
+                # items processed before or after the failed one may have set
+                # entries to True; clear them all so the tensor sizes stay
+                # consistent with the (empty) mm_embeds_req.
+                is_mm_embed[
+                    req_start_idx : req_start_idx + num_scheduled_tokens
+                ] = False
+                mm_embeds_req.clear()
+            else:
                 if self.is_multimodal_pruning_enabled and self.uses_mrope:
                     assert req_state.mrope_positions is not None
                     should_sync_mrope_positions = True
@@ -2777,6 +2825,16 @@ class GPUModelRunner(
             ) as ec_connector_output:
                 self._execute_mm_encoder(scheduler_output)
                 mm_embeds, is_mm_embed = self._gather_mm_embeddings(scheduler_output)
+                # Report any unresolved EC failures (current step + carry-overs
+                # from previous steps that weren't invalidated in time due to
+                # scheduler/worker race).  The finally block merges these with
+                # the connector-reported failures so the scheduler sees
+                # everything in one place and calls invalidate_ec_failed +
+                # reschedule for all affected requests.
+                if self._ec_failed_unresolved and ec_connector_output is not None:
+                    ec_connector_output.invalid_mm_hashes |= (
+                        self._ec_failed_unresolved
+                    )
 
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)

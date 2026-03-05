@@ -1135,6 +1135,16 @@ class Scheduler(SchedulerInterface):
                     # EncodeCacheManager.
                     # Skip it - the EC connector will handle saving to external
                     # storage if needed in build_connector_meta().
+                    if (
+                        item_identifier in self.failed_recving_ec_mm_hashes
+                    ):
+                        logger.warning(
+                            "hero: check_and_update_cache returned True for "
+                            "recently-failed EC mm_hash=%.16s req=%s — "
+                            "cache was not properly invalidated!",
+                            item_identifier,
+                            request.request_id,
+                        )
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
@@ -2217,8 +2227,45 @@ class Scheduler(SchedulerInterface):
         if not affected_requests:
             return set()
 
+        # Always invalidate failed EC hashes from encoder_cache_manager,
+        # regardless of policy. This must happen before finish_requests() so
+        # that:
+        # 1. check_and_update_cache() returns False for these hashes, preventing
+        #    stale cache hits from future requests that share the same mm_hash.
+        # 2. The hashes land in `freed` (not `freeable`), so they appear in
+        #    free_encoder_mm_hashes immediately in the next SchedulerOutput,
+        #    allowing workers to discard them from _ec_failed_unresolved.
+        # After invalidate_ec_failed removes the hash from `cached`, the
+        # subsequent free_encoder_input() call inside finish_requests() becomes
+        # a safe no-op (it guards on cached.get(mm_hash) being falsy).
+        self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
+
+        for req_id in affected_requests:
+            request = self.requests[req_id]
+
+            for i, mm_feature in enumerate(request.mm_features):
+                if mm_feature.identifier in invalid_mm_hashes:
+                    was_cached = mm_feature.identifier in self.encoder_cache_manager.cached
+                    self.encoder_cache_manager.invalidate_ec_failed(request, i)
+                    logger.debug(
+                        "hero: invalidate_ec_failed req=%s mm_hash=%.16s "
+                        "was_in_cached=%s",
+                        req_id,
+                        mm_feature.identifier,
+                        was_cached,
+                    )
+
+            # Clear do_remote_encode to prevent retrying the failed EC transfer.
+            if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
+                for mm_hash in invalid_mm_hashes:
+                    if mm_hash in request.ec_transfer_params:
+                        request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
+
         if should_fail:
-            # Fail policy: immediately fail affected requests
+            # Fail policy: immediately fail affected requests.
+            # invalidate_ec_failed was already called above, so the GPU-side
+            # encoder_cache entry will be popped via free_encoder_mm_hashes in
+            # the next step, and _ec_failed_unresolved will be cleaned up there.
             logger.error(
                 "Failing %d request(s) due to EC load failure "
                 "(failure_policy=fail, %d mm_hashes affected). Request IDs: %s",
@@ -2229,35 +2276,19 @@ class Scheduler(SchedulerInterface):
             self.finish_requests(affected_requests, RequestStatus.FINISHED_ERROR)
             return affected_requests
 
-        # Recompute policy: invalidate failed EC hashes so the scheduler
-        # re-schedules local encoding for them in the next step.
+        # Recompute policy: invalidate_ec_failed (above) already removed the
+        # failed entries from encoder_cache_manager so check_and_update_cache()
+        # returns False next step, triggering local re-encoding.
         logger.warning(
             "Recovered from EC load failure: "
-            "%d request(s) will be rescheduled for local encoding (%d mm_hashes affected).",
+            "%d request(s) will be rescheduled for local encoding "
+            "(%d mm_hashes affected). affected_req_ids=%s, invalid_mm_hashes=%s",
             len(affected_requests),
             len(invalid_mm_hashes),
+            affected_requests,
+            [h[:16] for h in invalid_mm_hashes],
         )
-
-        # Track failed mm_hashes for monitoring.
-        self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
-
-        for req_id in affected_requests:
-            request = self.requests[req_id]
-
-            # Invalidate every failed mm_hash in this request.
-            # This removes the entry from encoder_cache_manager entirely so
-            # check_and_update_cache() returns False next step, causing the
-            # scheduler to re-schedule local encoding (can_allocate + allocate).
-            for i, mm_feature in enumerate(request.mm_features):
-                if mm_feature.identifier in invalid_mm_hashes:
-                    self.encoder_cache_manager.invalidate_ec_failed(request, i)
-
-            # Clear do_remote_encode to prevent retrying the failed EC transfer.
-            if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
-                for mm_hash in invalid_mm_hashes:
-                    if mm_hash in request.ec_transfer_params:
-                        request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
 
         # Return affected IDs to skip in update_from_output
         # (they will be rescheduled for local encoding next step).
-        return set(affected_requests.keys())
+        return affected_requests
