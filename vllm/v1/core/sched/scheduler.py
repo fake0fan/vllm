@@ -1135,16 +1135,13 @@ class Scheduler(SchedulerInterface):
                     # EncodeCacheManager.
                     # Skip it - the EC connector will handle saving to external
                     # storage if needed in build_connector_meta().
-                    if (
-                        item_identifier in self.failed_recving_ec_mm_hashes
-                    ):
-                        logger.warning(
-                            "hero: check_and_update_cache returned True for "
-                            "recently-failed EC mm_hash=%.16s req=%s — "
-                            "cache was not properly invalidated!",
-                            item_identifier,
-                            request.request_id,
-                        )
+                    logger.warning(
+                        "hero: check_and_update_cache returned True for "
+                        "recently-failed EC mm_hash=%.16s req=%s — "
+                        "cache was not properly invalidated!",
+                        item_identifier,
+                        request.request_id,
+                    )
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
@@ -1156,6 +1153,7 @@ class Scheduler(SchedulerInterface):
                 and (num_computed_tokens + num_new_tokens)
                 < (start_pos + num_encoder_tokens)
             ):
+                logger.debug(f"hero: it breaks here for mm_hash {item_identifier} / {num_computed_tokens, num_new_tokens, start_pos}")
                 num_new_tokens = start_pos - num_computed_tokens
                 break
             if not self.encoder_cache_manager.can_allocate(
@@ -1165,6 +1163,7 @@ class Scheduler(SchedulerInterface):
                 # NOTE(woosuk): We assume that the encoder input tokens should
                 # be processed altogether, as the encoder usually uses
                 # bidirectional attention.
+                logger.debug(f"hero: it breaks here for mm_hash {item_identifier} / not can can_allocate")
                 if num_computed_tokens + shift_computed_tokens < start_pos:
                     # We only schedule the decoder tokens just before the
                     # encoder input.
@@ -1193,11 +1192,13 @@ class Scheduler(SchedulerInterface):
             # There's no embeddings in the current range of encoder placeholder tokens
             # so we can skip the encoder input.
             if curr_embeds_end - curr_embeds_start == 0:
+                logger.debug(f"hero: it continue here for mm_hash {item_identifier} / curr_embeds_end")
                 continue
 
             if self.ec_connector is not None and self.ec_connector.has_cache_item(
                 item_identifier, request
             ):
+                logger.debug(f"hero: it continue here for mm_hash {item_identifier} / has_cache_item")
                 mm_hashes_to_schedule.add(item_identifier)
                 external_load_encoder_input.append(i)
                 num_embeds_to_schedule += num_encoder_embeds
@@ -1297,7 +1298,16 @@ class Scheduler(SchedulerInterface):
                 # skip failed or rescheduled requests from KV load failure
                 continue
             if failed_ec_load_req_ids and req_id in failed_ec_load_req_ids:
-                # skip failed or rescheduled requests from EC load failure
+                # rollback: reset num_computed_tokens to 0
+                # _try_schedule_encoder_inputs in the next step will:
+                #   - skip still-cached successful items via check_and_update_cache
+                #   - re-schedule only the failed items for local encoding
+                # then _gather_mm_embeddings in model runner can:
+                #   - handle the request after all mm items are valid
+                request = self.requests.get(req_id)
+                if request is not None:
+                    logger.debug(f"hero: invalid mm items exist; resetting num_computed_tokens to 0 for req_id: {req_id}")
+                    request.num_computed_tokens = 0
                 continue
             request = self.requests.get(req_id)
             if request is None:
@@ -2259,6 +2269,7 @@ class Scheduler(SchedulerInterface):
             if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
                 for mm_hash in invalid_mm_hashes:
                     if mm_hash in request.ec_transfer_params:
+                        logger.debug(f"hero: setting do_remote_encode to False for mm_hash {mm_hash} coz invalid")
                         request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
 
         if should_fail:

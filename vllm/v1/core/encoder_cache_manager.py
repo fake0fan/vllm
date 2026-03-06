@@ -115,6 +115,7 @@ class EncoderCacheManager:
             self.num_freeable_slots -= num_encoder_embeds
 
         self.cached[mm_hash].add(request.request_id)
+        logger.debug(f"hero: self.cache {self.cached} when checking mm_hash {mm_hash}")
         return True
 
     def can_allocate(
@@ -308,6 +309,7 @@ class EncoderCacheManager:
         # Restore physical slot in both cases.
         self.num_free_slots += num_encoder_embeds
 
+        logger.debug(f"hero: delete mm_hash {mm_hash} from cache manager!! invalidate_ec_failed")
         del self.cached[mm_hash]
 
         # Tell workers to pop this entry from their GPU encoder_cache.

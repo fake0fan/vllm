@@ -329,6 +329,7 @@ class MooncakeECConnectorScheduler:
                 )
 
             # Only trigger 1 EC transfer per mm_hash
+            logger.debug(f"hero: setting do_remote_encode to False for mm_hash {mm_hash} coz update_state_after_alloc")
             mm_hash_params["do_remote_encode"] = False
 
     def build_connector_meta(
@@ -858,7 +859,8 @@ class MooncakeECConnectorWorker:
             self.async_zmq_ctx, path, zmq.REQ, bind=False, linger=0
         )
         # EC cache is typically smaller than KV cache, 10s should be sufficient
-        sock.setsockopt(zmq.RCVTIMEO, 10000)  # 10 seconds timeout
+        # sock.setsockopt(zmq.RCVTIMEO, 10000)  # 10 seconds timeout
+        sock.setsockopt(zmq.RCVTIMEO, 100)  # hero: 0.1 seconds timeout
 
         transfer_failed = False
         try:
