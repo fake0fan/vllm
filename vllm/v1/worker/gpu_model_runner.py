@@ -2493,6 +2493,11 @@ class GPUModelRunner(
         # ran above).
         self._ec_failed_unresolved -= self.encoder_cache.keys()
 
+        # Track request indices that has EC failures
+        # We have to skip sample token for these requests to avoid CUDA error
+        # As invalid entry may have -1 as the sampled token, which triggers error.
+        self._ec_failed_req_indices: list[int] = []
+
         for req_id in self.input_batch.req_ids:
             mm_embeds_req: list[torch.Tensor] = []
 
@@ -2515,6 +2520,12 @@ class GPUModelRunner(
                 # is_mm_embed[
                 #     req_start_idx : req_start_idx + num_scheduled_tokens
                 # ] = False
+
+                # Skip sample token for this request
+                req_idx = self.input_batch.req_id_to_index[req_id]
+                self._ec_failed_req_indices.append(req_idx)
+                logger.debug(f"hero: append req_id {req_id} as req_idx {req_idx} to _ec_failed_req_indices")
+
                 req_start_idx += num_scheduled_tokens
                 logger.debug(f"hero: req_id {req_id} is skipped in gather mm")
                 continue
@@ -2854,14 +2865,51 @@ class GPUModelRunner(
 
             neg_positions = torch.where(sliced_input_ids == -1)  # hero:
             logger.debug(f"hero: -1 tokens found at positions: {neg_positions}")
+
+            if len(neg_positions[0]) > 0:
+                logger.debug(f"hero: -1 tokens exist")
+            torch.set_printoptions(threshold=float('inf'))  # or a very large number
+            print(sliced_input_ids)
+            torch.set_printoptions(profile="default")
+            
         
             num_expected_tokens = is_mm_embed.sum().item()  # hero:
             logger.debug(f"hero: num_expected_tokens: {num_expected_tokens}")
             ###hero###
 
+            # EPD fault tolerance: mark EC-failed requests in
+            # discard_request_mask such that _bookkeeping_sync skips writing
+            # sampled tokens for them (invalid requests would get -1 as placeholder
+            # token, which pollute further steps).
+            if self._ec_failed_req_indices:
+                for req_idx in self._ec_failed_req_indices:
+                    self.discard_request_mask.np[req_idx] = True
+                    logger.debug(f"hero: setting req_idx {req_idx} to discard_request_mask")
+                self.discard_request_mask.copy_to_gpu(
+                    self.input_batch.num_reqs
+                )
+
+            # if len(neg_positions[0]) > 0:
+            #     # brute-force replace -1 by 0
+            #     self.input_ids.gpu[:num_scheduled_tokens].clamp_(min=0)
+            #     logger.debug(f"hero: brute-force replace -1 by 0")
+
+            #     torch.set_printoptions(threshold=float('inf'))  # or a very large number
+            #     # print(self.input_ids.gpu[:num_scheduled_tokens])
+            #     torch.set_printoptions(profile="default")
+
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
+
+            # ########## hero ############
+            # handle_oov_mm_token = False
+            # if has_ec_transfer() and not get_ec_transfer().is_producer:
+            #     logger.debug(f"hero: set handle_oov_mm_token = True")
+            #     handle_oov_mm_token = True
+            # ########## hero ############
+
+
             inputs_embeds_scheduled = self.model.embed_input_ids(
                 self.input_ids.gpu[:num_scheduled_tokens],
                 multimodal_embeddings=mm_embeds,
@@ -3062,6 +3110,8 @@ class GPUModelRunner(
         for req_idx in range(num_sampled_tokens):
             if self.use_async_scheduling:
                 sampled_ids = [-1] if req_idx not in invalid_req_indices_set else None
+                logger.debug(f"hero: invalid_req_indices_set: {invalid_req_indices_set}")
+                logger.debug(f"hero: sampled_ids = {sampled_ids} is assigned here for req_id: {req_ids[req_idx]} / req_idx: {req_idx}")
             else:
                 sampled_ids = valid_sampled_token_ids[req_idx]
 

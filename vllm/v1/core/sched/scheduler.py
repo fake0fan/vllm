@@ -1308,6 +1308,15 @@ class Scheduler(SchedulerInterface):
                 if request is not None:
                     logger.debug(f"hero: invalid mm items exist; resetting num_computed_tokens to 0 for req_id: {req_id}")
                     request.num_computed_tokens = 0
+
+                    # Clear any output tokens so that model runner's
+                    # _update_states resets stale entries & avoid -1 placeholders
+                    if request.num_output_tokens > 0:
+                        del request._output_token_ids[:]
+                        del request._all_token_ids[
+                            request.num_prompt_tokens :
+                        ]
+                        request.num_output_placeholders = 0
                 continue
             request = self.requests.get(req_id)
             if request is None:
