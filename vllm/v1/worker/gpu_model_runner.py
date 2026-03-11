@@ -1357,6 +1357,7 @@ class GPUModelRunner(
                 max_flattened_index = max(max_flattened_index, flattened_index)
         num_commmon_tokens = len(sample_flattened_indices)
         total_without_spec = total_num_scheduled_tokens - total_num_spec_tokens
+        logger.debug(f"hero: num_commmon_tokens < total_without_spec: {num_commmon_tokens < total_without_spec}num_commmon_tokens: {num_commmon_tokens} / total_without_spec: {total_without_spec}")
         if num_commmon_tokens < total_without_spec:
             # If not all requests are decodes from the last iteration,
             # We need to copy the input_ids_cpu to the GPU first.
@@ -2841,9 +2842,7 @@ class GPUModelRunner(
                 # everything in one place and calls invalidate_ec_failed +
                 # reschedule for all affected requests.
                 if self._ec_failed_unresolved and ec_connector_output is not None:
-                    ec_connector_output.invalid_mm_hashes |= (
-                        self._ec_failed_unresolved
-                    )
+                    ec_connector_output.invalid_mm_hashes = self._ec_failed_unresolved
 
             ###hero###
             logger.debug(f"hero: input_ids shape: {self.input_ids.gpu.shape}")
@@ -2866,6 +2865,9 @@ class GPUModelRunner(
             neg_positions = torch.where(sliced_input_ids == -1)  # hero:
             logger.debug(f"hero: -1 tokens found at positions: {neg_positions}")
 
+            neg_positions_full = torch.where(self.input_ids.gpu == -1)  # hero:
+            logger.debug(f"hero: -1 tokens found in full self.input_ids.gpu at positions: {neg_positions_full}")
+
             if len(neg_positions[0]) > 0:
                 logger.debug(f"hero: -1 tokens exist")
             torch.set_printoptions(threshold=float('inf'))  # or a very large number
@@ -2885,14 +2887,24 @@ class GPUModelRunner(
                 for req_idx in self._ec_failed_req_indices:
                     self.discard_request_mask.np[req_idx] = True
                     logger.debug(f"hero: setting req_idx {req_idx} to discard_request_mask")
+
+                    prompt_len = self.input_batch.num_prompt_tokens[req_idx]
+                    self.input_batch.num_tokens_no_spec[req_idx] = prompt_len
+
+                    logger.debug(f"hero: req_idx, prompt_len {req_idx, prompt_len}")
+                    logger.debug(f"hero: self.input_batch.token_ids_cpu[req_idx, prompt_len] is {self.input_batch.token_ids_cpu[req_idx, prompt_len]}")
+                    if self.input_batch.token_ids_cpu[req_idx, prompt_len] == -1:
+                        logger.debug(f"hero: setting token to 0 from {req_idx, prompt_len}")
+                        self.input_batch.token_ids_cpu[req_idx, prompt_len] = 0
+
                 self.discard_request_mask.copy_to_gpu(
                     self.input_batch.num_reqs
                 )
 
-            # if len(neg_positions[0]) > 0:
-            #     # brute-force replace -1 by 0
-            #     self.input_ids.gpu[:num_scheduled_tokens].clamp_(min=0)
-            #     logger.debug(f"hero: brute-force replace -1 by 0")
+            if len(neg_positions[0]) > 0:
+                # brute-force replace -1 by 0
+                self.input_ids.gpu[:num_scheduled_tokens].clamp_(min=0)
+                logger.debug(f"hero: brute-force replace -1 by 0")
 
             #     torch.set_printoptions(threshold=float('inf'))  # or a very large number
             #     # print(self.input_ids.gpu[:num_scheduled_tokens])
@@ -3114,6 +3126,7 @@ class GPUModelRunner(
                 logger.debug(f"hero: sampled_ids = {sampled_ids} is assigned here for req_id: {req_ids[req_idx]} / req_idx: {req_idx}")
             else:
                 sampled_ids = valid_sampled_token_ids[req_idx]
+                logger.debug(f"hero: self.use_async_scheduling: {self.use_async_scheduling}")
 
             num_sampled_ids: int = len(sampled_ids) if sampled_ids else 0
 
@@ -3128,6 +3141,7 @@ class GPUModelRunner(
                 f"{self.max_model_len}"
             )
 
+            logger.debug(f"hero: sampled_ids start_idx:end_idx is {start_idx, end_idx} for  req_idx {req_idx}")
             self.input_batch.token_ids_cpu[req_idx, start_idx:end_idx] = sampled_ids
             self.input_batch.is_token_ids[req_idx, start_idx:end_idx] = True
             self.input_batch.num_tokens_no_spec[req_idx] = end_idx

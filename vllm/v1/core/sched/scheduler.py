@@ -2228,7 +2228,7 @@ class Scheduler(SchedulerInterface):
         """
         if not invalid_mm_hashes:
             return set()
-
+        logger.debug(f"hero: invalid_mm_hashes for _handle_invalid_ec_items: {invalid_mm_hashes}")
         should_fail = not self.recompute_ec_load_failures
 
         # Find all requests that reference these failed mm_hashes.
