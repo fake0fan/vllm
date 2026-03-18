@@ -3329,9 +3329,9 @@ class GPUModelRunner(
 
             if len(neg_positions[0]) > 0:
                 logger.debug(f"hero: -1 tokens exist")
-            torch.set_printoptions(threshold=float('inf'))  # or a very large number
-            print(sliced_input_ids)
-            torch.set_printoptions(profile="default")
+            # torch.set_printoptions(threshold=float('inf'))  # or a very large number
+            # print(sliced_input_ids)
+            # torch.set_printoptions(profile="default")
             
         
             num_expected_tokens = is_mm_embed.sum().item()  # hero:
