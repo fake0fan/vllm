@@ -1574,6 +1574,22 @@ class Scheduler(SchedulerInterface):
                         trace_headers=request.trace_headers,
                     )
                 )
+        
+        if failed_ec_load_req_ids and not self.recompute_ec_load_failures:
+            # Ensure req_id still exist, as finish_requests might already happened for some requests 
+            reqs = [self.requests[req_id] for req_id in failed_ec_load_req_ids if req_id in self.requests]
+            self.finish_requests((req.request_id for req in reqs), RequestStatus.FINISHED_ERROR)
+            for req in reqs:
+                outputs[req.client_index].append(
+                    EngineCoreOutput(
+                        request_id=req.request_id,
+                        new_token_ids=[],
+                        finish_reason=req.get_finished_reason(),
+                        events=req.take_events(),
+                        trace_headers=req.trace_headers,
+                        num_cached_tokens=req.num_cached_tokens,
+                    )
+                )
 
         # KV Connector: update state for finished KV Transfers.
         if kv_connector_output:
@@ -2479,7 +2495,7 @@ class Scheduler(SchedulerInterface):
                 len(invalid_mm_hashes),
                 affected_requests,
             )
-            self.finish_requests(affected_requests, RequestStatus.FINISHED_ERROR)
+            # self.finish_requests(affected_requests, RequestStatus.FINISHED_ERROR) # TODO: hero: moved to update_from_output step
             return affected_requests
 
         # Recompute policy: invalidate_ec_failed (above) already removed the
