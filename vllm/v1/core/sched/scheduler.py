@@ -1209,6 +1209,10 @@ class Scheduler(SchedulerInterface):
             mm_hashes_to_schedule.add(item_identifier)
             encoder_inputs_to_schedule.append(i)
 
+        # Update self.failed_recving_ec_mm_hashes
+        # TODO: hero: any better location to perform this?
+        self.failed_recving_ec_mm_hashes -= mm_hashes_to_schedule
+
         return (
             encoder_inputs_to_schedule,
             num_new_tokens,
@@ -1280,12 +1284,18 @@ class Scheduler(SchedulerInterface):
         # Handle EC transfer failures
         ec_connector_output = model_runner_output.ec_connector_output
         failed_ec_load_req_ids = None
-        if ec_connector_output and ec_connector_output.invalid_mm_hashes:
-            # These mm_hashes failed to load from remote encoder.
-            # Identify affected requests and fallback to local encoding.
-            failed_ec_load_req_ids = self._handle_invalid_ec_items(
-                ec_connector_output.invalid_mm_hashes
-            )
+        invalid_mm_hashes = None
+        
+        if ec_connector_output:
+            invalid_mm_hashes = ec_connector_output.invalid_mm_hashes
+
+        # These mm_hashes failed to load from remote encoder.
+        # Identify affected requests and fallback to local encoding.
+        # invalid_mm_hashes can be None -> no new invalid hashes, 
+        # but there may still be unresolved request pending
+        failed_ec_load_req_ids = self._handle_invalid_ec_items(
+            invalid_mm_hashes
+        )
 
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
@@ -1297,6 +1307,9 @@ class Scheduler(SchedulerInterface):
             if failed_kv_load_req_ids and req_id in failed_kv_load_req_ids:
                 # skip failed or rescheduled requests from KV load failure
                 continue
+            logger.debug(f"hero: failed_ec_load_req_ids {failed_ec_load_req_ids}")
+            if failed_ec_load_req_ids:
+                logger.debug(f"hero: req_id: {req_id}; {req_id in failed_ec_load_req_ids}; failed_ec_load_req_ids {failed_ec_load_req_ids}")
             if failed_ec_load_req_ids and req_id in failed_ec_load_req_ids:
                 # rollback: reset num_computed_tokens to 0
                 # _try_schedule_encoder_inputs in the next step will:
@@ -1305,6 +1318,7 @@ class Scheduler(SchedulerInterface):
                 # then _gather_mm_embeddings in model runner can:
                 #   - handle the request after all mm items are valid
                 request = self.requests.get(req_id)
+                logger.debug(f"hero: request for {req_id}: {request}")
                 if request is not None:
                     logger.debug(f"hero: invalid mm items exist; resetting num_computed_tokens to 0 for req_id: {req_id}")
                     request.num_computed_tokens = 0
@@ -2231,21 +2245,6 @@ class Scheduler(SchedulerInterface):
         logger.debug(f"hero: invalid_mm_hashes for _handle_invalid_ec_items: {invalid_mm_hashes}")
         should_fail = not self.recompute_ec_load_failures
 
-        # Find all requests that reference these failed mm_hashes.
-        affected_requests: set[str] = set()
-
-        for req_id, request in self.requests.items():
-            if not hasattr(request, "mm_features") or not request.mm_features:
-                continue
-
-            for mm_feature in request.mm_features:
-                if mm_feature.identifier in invalid_mm_hashes:
-                    affected_requests.add(req_id)
-                    break
-
-        if not affected_requests:
-            return set()
-
         # Always invalidate failed EC hashes from encoder_cache_manager,
         # regardless of policy. This must happen before finish_requests() so
         # that:
@@ -2259,10 +2258,29 @@ class Scheduler(SchedulerInterface):
         # a safe no-op (it guards on cached.get(mm_hash) being falsy).
         self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
 
+        logger.debug(f"hero: self.failed_recving_ec_mm_hashes: {self.failed_recving_ec_mm_hashes}")
+
+
+        # Find all requests that reference these failed mm_hashes.
+        affected_requests: set[str] = set()
+
+        for req_id, request in self.requests.items():
+            if not hasattr(request, "mm_features") or not request.mm_features:
+                continue
+
+            for mm_feature in request.mm_features:
+                if mm_feature.identifier in self.failed_recving_ec_mm_hashes:
+                    affected_requests.add(req_id)
+                    break
+
+        if not affected_requests:
+            return set()
+
         for req_id in affected_requests:
             request = self.requests[req_id]
 
             for i, mm_feature in enumerate(request.mm_features):
+                # TODO: Hero: need change to self.failed_recving_ec_mm_hashes? -> but will lead to repeated action
                 if mm_feature.identifier in invalid_mm_hashes:
                     was_cached = mm_feature.identifier in self.encoder_cache_manager.cached
                     self.encoder_cache_manager.invalidate_ec_failed(request, i)
@@ -2276,6 +2294,7 @@ class Scheduler(SchedulerInterface):
 
             # Clear do_remote_encode to prevent retrying the failed EC transfer.
             if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
+                # TODO: Hero: need change to self.failed_recving_ec_mm_hashes? -> but will lead to repeated action
                 for mm_hash in invalid_mm_hashes:
                     if mm_hash in request.ec_transfer_params:
                         logger.debug(f"hero: setting do_remote_encode to False for mm_hash {mm_hash} coz invalid")
@@ -2302,11 +2321,11 @@ class Scheduler(SchedulerInterface):
         logger.warning(
             "Recovered from EC load failure: "
             "%d request(s) will be rescheduled for local encoding "
-            "(%d mm_hashes affected). affected_req_ids=%s, invalid_mm_hashes=%s",
+            "(%d mm_hashes affected). affected_req_ids=%s, self.failed_recving_ec_mm_hashes=%s",
             len(affected_requests),
-            len(invalid_mm_hashes),
+            len(self.failed_recving_ec_mm_hashes),
             affected_requests,
-            [h[:16] for h in invalid_mm_hashes],
+            [h[:16] for h in self.failed_recving_ec_mm_hashes],
         )
 
         # Return affected IDs to skip in update_from_output
