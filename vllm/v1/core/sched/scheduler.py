@@ -1364,7 +1364,7 @@ class Scheduler(SchedulerInterface):
         # Handle EC transfer failures
         ec_connector_output = model_runner_output.ec_connector_output
         failed_ec_load_req_ids = None
-        invalid_mm_hashes = None
+        invalid_mm_hashes = set()
         
         if ec_connector_output:
             invalid_mm_hashes = ec_connector_output.invalid_mm_hashes
@@ -2423,8 +2423,6 @@ class Scheduler(SchedulerInterface):
         Returns:
             Set of affected request IDs to skip in update_from_output main loop.
         """
-        if not invalid_mm_hashes:
-            return set()
         logger.debug(f"hero: invalid_mm_hashes for _handle_invalid_ec_items: {invalid_mm_hashes}")
         should_fail = not self.recompute_ec_load_failures
 
@@ -2448,10 +2446,12 @@ class Scheduler(SchedulerInterface):
         affected_requests: set[str] = set()
 
         for req_id, request in self.requests.items():
+            logger.debug(f"hero: handling self.requests affected req_id: {req_id} in self.requests.items()")
             if not hasattr(request, "mm_features") or not request.mm_features:
                 continue
 
             for mm_feature in request.mm_features:
+                logger.debug(f"checking if req_id {req_id} hash {mm_feature.identifier} in self.failed_recving_ec_mm_hashes {self.failed_recving_ec_mm_hashes}")
                 if mm_feature.identifier in self.failed_recving_ec_mm_hashes:
                     affected_requests.add(req_id)
                     break
