@@ -37,10 +37,10 @@ class ECConnectorModelRunnerMixin:
     @staticmethod
     def get_finished_ec_transfers(
         scheduler_output: "SchedulerOutput",
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         if has_ec_transfer():
             return get_ec_transfer().get_finished(scheduler_output.finished_req_ids)
-        return None, None
+        return None, None, None
 
     @staticmethod
     def maybe_get_ec_connector_output(
@@ -55,6 +55,19 @@ class ECConnectorModelRunnerMixin:
             if has_ec_transfer()
             else nullcontext()
         )
+
+    @staticmethod
+    def maybe_wait_for_ec_load() -> set[str]:
+        """Wait for EC loads to complete.
+
+        Returns:
+            Set of mm_hashes that failed to load. Empty set if no EC transfer
+            is configured or all transfers succeeded.
+        """
+        if not has_ec_transfer():
+            return set()
+        connector = get_ec_transfer()
+        return connector.wait_for_load()
 
     # This context manager must be used within an active forward context.
     # It encapsulates the entire EC connector lifecycle within execute_model
@@ -77,10 +90,21 @@ class ECConnectorModelRunnerMixin:
             ec_connector.start_load_caches(encoder_cache, **kwargs)
 
         try:
+            logger.debug(f"hero: before yield output")
             yield output
+            logger.debug(f"hero: after yield output")
         finally:
-            output.finished_sending, output.finished_recving = (
-                ec_connector.get_finished(scheduler_output.finished_req_ids)
-            )
-
+            logger.debug(f"hero: before get_finished")
+            (
+                output.finished_sending,
+                output.finished_recving,
+                connector_invalid_hashes,
+            ) = ec_connector.get_finished(scheduler_output.finished_req_ids)
+            # Merge connector-reported failures with any stale cache misses
+            # that were detected during _gather_mm_embeddings and pre-populated
+            # into output.invalid_mm_hashes before this finally block ran.
+            if connector_invalid_hashes:
+                output.invalid_mm_hashes |= connector_invalid_hashes
+            ec_connector.maybe_update_remote_cache_state(encoder_cache)
+            logger.debug(f"after get_finished")
             ec_connector.clear_connector_metadata()
