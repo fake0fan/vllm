@@ -159,6 +159,25 @@ vllm bench serve \
     --endpoint /v1/chat/completions \
     --port $PROXY_PORT
 
+PIDS+=($!)
+
+###############################################################################
+# Single request with local image
+###############################################################################
+echo "Running single request with local image (non-stream)..."
+curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+    "model": "'"${MODEL}"'",
+    "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+        {"type": "text", "text": "What is in this image?"}
+    ]}
+    ]
+    }'
+    
 # cleanup
 echo "cleanup..."
 cleanup

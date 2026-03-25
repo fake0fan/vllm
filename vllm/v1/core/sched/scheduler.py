@@ -141,15 +141,10 @@ class Scheduler(SchedulerInterface):
             self.parallel_config.data_parallel_index,
         )
         self.ec_connector = None
-        self.recompute_ec_load_failures = True
         if self.vllm_config.ec_transfer_config is not None:
             self.ec_connector = ECConnectorFactory.create_connector(
                 config=self.vllm_config, role=ECConnectorRole.SCHEDULER
             )
-            ec_load_failure_policy = (
-                self.vllm_config.ec_transfer_config.ec_load_failure_policy
-            )
-            self.recompute_ec_load_failures = ec_load_failure_policy == "recompute"
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -186,9 +181,6 @@ class Scheduler(SchedulerInterface):
         # KV Connector: requests in process of async KV loading or recving
         self.finished_recving_kv_req_ids: set[str] = set()
         self.failed_recving_kv_req_ids: set[str] = set()
-
-        # EC Connector: track failed EC transfers for retry
-        self.failed_recving_ec_mm_hashes: set[str] = set()
 
         # Encoder-related.
         # Calculate encoder cache size if applicable
@@ -1266,10 +1258,6 @@ class Scheduler(SchedulerInterface):
             mm_hashes_to_schedule.add(item_identifier)
             encoder_inputs_to_schedule.append(i)
 
-        # Update self.failed_recving_ec_mm_hashes
-        # TODO: hero: any better location to perform this?
-        self.failed_recving_ec_mm_hashes -= mm_hashes_to_schedule
-
         return (
             encoder_inputs_to_schedule,
             num_new_tokens,
@@ -1338,22 +1326,6 @@ class Scheduler(SchedulerInterface):
                 kv_connector_output.invalid_block_ids
             )
 
-        # Handle EC transfer failures
-        ec_connector_output = model_runner_output.ec_connector_output
-        failed_ec_load_req_ids = None
-        invalid_mm_hashes = set()
-        
-        if ec_connector_output:
-            invalid_mm_hashes = ec_connector_output.invalid_mm_hashes
-
-        # These mm_hashes failed to load from remote encoder.
-        # Identify affected requests and fallback to local encoding.
-        # invalid_mm_hashes can be None -> no new invalid hashes, 
-        # but there may still be unresolved request pending
-        failed_ec_load_req_ids = self._handle_invalid_ec_items(
-            invalid_mm_hashes
-        )
-
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
         # to avoid expensive operations inside the loop.
@@ -1363,31 +1335,6 @@ class Scheduler(SchedulerInterface):
             assert num_tokens_scheduled > 0
             if failed_kv_load_req_ids and req_id in failed_kv_load_req_ids:
                 # skip failed or rescheduled requests from KV load failure
-                continue
-            logger.debug(f"hero: failed_ec_load_req_ids {failed_ec_load_req_ids}")
-            if failed_ec_load_req_ids:
-                logger.debug(f"hero: req_id: {req_id}; {req_id in failed_ec_load_req_ids}; failed_ec_load_req_ids {failed_ec_load_req_ids}")
-            if failed_ec_load_req_ids and req_id in failed_ec_load_req_ids:
-                # rollback: reset num_computed_tokens to 0
-                # _try_schedule_encoder_inputs in the next step will:
-                #   - skip still-cached successful items via check_and_update_cache
-                #   - re-schedule only the failed items for local encoding
-                # then _gather_mm_embeddings in model runner can:
-                #   - handle the request after all mm items are valid
-                request = self.requests.get(req_id)
-                logger.debug(f"hero: request for {req_id}: {request}")
-                if request is not None:
-                    logger.debug(f"hero: invalid mm items exist; resetting num_computed_tokens to 0 for req_id: {req_id}")
-                    request.num_computed_tokens = 0
-
-                    # Clear any output tokens so that model runner's
-                    # _update_states resets stale entries & avoid -1 placeholders
-                    if request.num_output_tokens > 0:
-                        del request._output_token_ids[:]
-                        del request._all_token_ids[
-                            request.num_prompt_tokens :
-                        ]
-                        request.num_output_placeholders = 0
                 continue
             request = self.requests.get(req_id)
             if request is None or request.is_finished():
@@ -1541,22 +1488,6 @@ class Scheduler(SchedulerInterface):
                         events=request.take_events(),
                         trace_headers=request.trace_headers,
                         num_cached_tokens=request.num_cached_tokens,
-                    )
-                )
-        
-        if failed_ec_load_req_ids and not self.recompute_ec_load_failures:
-            # Ensure req_id still exist, as finish_requests might already happened for some requests 
-            reqs = [self.requests[req_id] for req_id in failed_ec_load_req_ids if req_id in self.requests]
-            self.finish_requests((req.request_id for req in reqs), RequestStatus.FINISHED_ERROR)
-            for req in reqs:
-                outputs[req.client_index].append(
-                    EngineCoreOutput(
-                        request_id=req.request_id,
-                        new_token_ids=[],
-                        finish_reason=req.get_finished_reason(),
-                        events=req.take_events(),
-                        trace_headers=req.trace_headers,
-                        num_cached_tokens=req.num_cached_tokens,
                     )
                 )
 
@@ -2382,110 +2313,3 @@ class Scheduler(SchedulerInterface):
         self.failed_recving_kv_req_ids |= async_failed_req_ids
         # Return sync affected IDs to skip in update_from_output
         return sync_failed_req_ids
-
-    def _handle_invalid_ec_items(self, invalid_mm_hashes: set[str]) -> set[str]:
-        """
-        Handle requests affected by invalid EC cache items (mm_hashes).
-
-        Similar to _handle_invalid_blocks(), we rollback num_computed_tokens
-        to before the failed mm_hash position, so the request will be rescheduled
-        for local encoding.
-
-        When EC transfer fails, we have two options based on ec_load_failure_policy:
-        1. recompute (default): Rollback num_computed_tokens to trigger local encoding
-        2. fail: Immediately fail the request with an error
-
-        Returns:
-            Set of affected request IDs to skip in update_from_output main loop.
-        """
-        logger.debug(f"hero: invalid_mm_hashes for _handle_invalid_ec_items: {invalid_mm_hashes}")
-        should_fail = not self.recompute_ec_load_failures
-
-        # Always invalidate failed EC hashes from encoder_cache_manager,
-        # regardless of policy. This must happen before finish_requests() so
-        # that:
-        # 1. check_and_update_cache() returns False for these hashes, preventing
-        #    stale cache hits from future requests that share the same mm_hash.
-        # 2. The hashes land in `freed` (not `freeable`), so they appear in
-        #    free_encoder_mm_hashes immediately in the next SchedulerOutput,
-        #    allowing workers to discard them from _ec_failed_unresolved.
-        # After invalidate_ec_failed removes the hash from `cached`, the
-        # subsequent free_encoder_input() call inside finish_requests() becomes
-        # a safe no-op (it guards on cached.get(mm_hash) being falsy).
-        self.failed_recving_ec_mm_hashes |= invalid_mm_hashes
-
-        logger.debug(f"hero: self.failed_recving_ec_mm_hashes: {self.failed_recving_ec_mm_hashes}")
-
-
-        # Find all requests that reference these failed mm_hashes.
-        affected_requests: set[str] = set()
-
-        for req_id, request in self.requests.items():
-            logger.debug(f"hero: handling self.requests affected req_id: {req_id} in self.requests.items()")
-            if not hasattr(request, "mm_features") or not request.mm_features:
-                continue
-
-            for mm_feature in request.mm_features:
-                logger.debug(f"checking if req_id {req_id} hash {mm_feature.identifier} in self.failed_recving_ec_mm_hashes {self.failed_recving_ec_mm_hashes}")
-                if mm_feature.identifier in self.failed_recving_ec_mm_hashes:
-                    affected_requests.add(req_id)
-                    break
-
-        if not affected_requests:
-            return set()
-
-        for req_id in affected_requests:
-            request = self.requests[req_id]
-
-            for i, mm_feature in enumerate(request.mm_features):
-                # TODO: Hero: need change to self.failed_recving_ec_mm_hashes? -> but will lead to repeated action
-                if mm_feature.identifier in invalid_mm_hashes:
-                    was_cached = mm_feature.identifier in self.encoder_cache_manager.cached
-                    self.encoder_cache_manager.invalidate_ec_failed(request, i)
-                    logger.debug(
-                        "hero: invalidate_ec_failed req=%s mm_hash=%.16s "
-                        "was_in_cached=%s",
-                        req_id,
-                        mm_feature.identifier,
-                        was_cached,
-                    )
-
-            # Clear do_remote_encode to prevent retrying the failed EC transfer.
-            if hasattr(request, "ec_transfer_params") and request.ec_transfer_params:
-                # TODO: Hero: need change to self.failed_recving_ec_mm_hashes? -> but will lead to repeated action
-                for mm_hash in invalid_mm_hashes:
-                    if mm_hash in request.ec_transfer_params:
-                        logger.debug(f"hero: setting do_remote_encode to False for mm_hash {mm_hash} coz invalid")
-                        request.ec_transfer_params[mm_hash]["do_remote_encode"] = False
-
-        if should_fail:
-            # Fail policy: immediately fail affected requests.
-            # invalidate_ec_failed was already called above, so the GPU-side
-            # encoder_cache entry will be popped via free_encoder_mm_hashes in
-            # the next step, and _ec_failed_unresolved will be cleaned up there.
-            logger.error(
-                "Failing %d request(s) due to EC load failure "
-                "(failure_policy=fail, %d mm_hashes affected). Request IDs: %s",
-                len(affected_requests),
-                len(invalid_mm_hashes),
-                affected_requests,
-            )
-            # self.finish_requests(affected_requests, RequestStatus.FINISHED_ERROR) # TODO: hero: moved to update_from_output step
-            return affected_requests
-
-        # Recompute policy: invalidate_ec_failed (above) already removed the
-        # failed entries from encoder_cache_manager so check_and_update_cache()
-        # returns False next step, triggering local re-encoding.
-        logger.warning(
-            "Recovered from EC load failure: "
-            "%d request(s) will be rescheduled for local encoding "
-            "(%d mm_hashes affected). affected_req_ids=%s, self.failed_recving_ec_mm_hashes=%s",
-            len(affected_requests),
-            len(self.failed_recving_ec_mm_hashes),
-            affected_requests,
-            [h[:16] for h in self.failed_recving_ec_mm_hashes],
-        )
-
-        # Return affected IDs to skip in update_from_output
-        # (they will be rescheduled for local encoding next step).
-        return affected_requests

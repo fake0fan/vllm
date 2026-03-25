@@ -817,8 +817,8 @@ class MooncakeECConnectorWorker:
             or failed_recving_mm_hashes
         ):
             logger.debug(
-                "Rank %s, get_finished: %s requests done sending, "
-                "%s requests done recving, %s requests failed recving",
+                "Rank %s, get_finished: %s items done sending, "
+                "%s items done recving, %s items failed recving",
                 self.tp_rank,
                 len(finished_sending_mm_hashes),
                 len(finished_recving_mm_hashes),
