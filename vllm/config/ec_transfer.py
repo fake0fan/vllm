@@ -57,11 +57,6 @@ class ECTransferConfig:
     """The Python module path to dynamically load the EC connector from.
     Only supported in V1."""
 
-    ec_load_failure_policy: Literal["recompute", "fail"] = "recompute"
-    """Policy for handling EC cache load failures.
-    'recompute': fallback to local encoder computation (default)
-    'fail': immediately fail the request with an error finish reason"""
-
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
