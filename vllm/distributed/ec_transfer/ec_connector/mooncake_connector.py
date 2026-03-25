@@ -1050,8 +1050,7 @@ class MooncakeECConnectorWorker:
             self._wait_for_load(), self.receiver_loop
         )
         fut.result()  # Block until complete
-        # Return a snapshot of failed hashes so the caller can skip the
-        # assertion and let the scheduler reschedule affected requests.
+        # Return a snapshot of failed hashes
         # get_finished() will clear the live set later.
         return set(self.failed_recving_mm_hashes.set)
 
