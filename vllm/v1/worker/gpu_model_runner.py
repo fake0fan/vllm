@@ -2719,7 +2719,7 @@ class GPUModelRunner(
         ec_failed_mm_hashes = self.maybe_wait_for_ec_load()
         logger.debug(f"hero: ec_failed_mm_hashes after maybe_wait_for_ec_load: {ec_failed_mm_hashes}")
 
-        assert ec_failed_mm_hashes is None, f"EC cache load failed for {ec_failed_mm_hashes}."
+        assert not ec_failed_mm_hashes, f"EC cache load failed for {ec_failed_mm_hashes}."
 
         for req_id in self.input_batch.req_ids:
             mm_embeds_req: list[torch.Tensor] = []
