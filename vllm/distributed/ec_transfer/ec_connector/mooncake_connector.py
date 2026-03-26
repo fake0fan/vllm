@@ -45,6 +45,8 @@ except ImportError as e:
 if TYPE_CHECKING:
     from vllm.v1.request import Request
 
+import random # hero
+
 MMHash = str
 ReqId = str
 
@@ -323,7 +325,7 @@ class MooncakeECConnectorScheduler:
                 logger.warning(
                     "[EC_SCHEDULER] ✗ Invalid ECTransferParams for mm_hash %s: %s. "
                     "This request will not utilize EC transfer",
-                    mm_hash[:16],
+                    mm_hash,
                     mm_hash_params,
                 )
 
@@ -574,7 +576,7 @@ class MooncakeECConnectorWorker:
             logger.debug(
                 "[EC_WORKER] Updated bookkeeping: local_mm_addrs[%s]=0x%x, "
                 "total_cached=%d",
-                mm_hash[:16],
+                mm_hash,
                 addr,
                 len(self.local_mm_addrs),
             )
@@ -651,7 +653,7 @@ class MooncakeECConnectorWorker:
             self.send_ec_cache(metadata)
             status = TRANS_DONE
         except Exception as e:
-            logger.error("Error processing Mooncake handshake: %s", e)
+            logger.error("Error from Mooncake ECConnector: %s", e)
         finally:
             pusher = make_zmq_socket(self.zmq_ctx, worker_channel_path, zmq.PUSH)
             try:
@@ -669,8 +671,8 @@ class MooncakeECConnectorWorker:
         for mm_hash, req_ids in meta.mm_hashes:
             logger.debug(
                 "[EC_WORKER_SENDER] Will send mm_hash=%s for req_ids=%s",
-                mm_hash[:16],
-                [rid[:16] for rid in req_ids],
+                mm_hash,
+                [rid for rid in req_ids],
             )
 
         self._send_caches(send_mm_hashes, meta)
@@ -697,19 +699,23 @@ class MooncakeECConnectorWorker:
             send_mm_hashes, remote_token_bytes, remote_mm_addrs
         ):
             if remote_token_byte == 0:
-                logger.debug(
+                logger.warning(
                     "[EC_WORKER_SENDER] Skip mm_hash=%s (remote_token_byte=0)",
-                    mm_hash[:16],
+                    mm_hash,
                 )
                 continue
 
             with self._mm_lock:
                 addr = self.local_mm_addrs.get(mm_hash)
+                # ##### hero####
+                # addr = None if random.random() < 0.1 else addr   # hero:
+                logger.debug(f"searching mm_hash {mm_hash} in self.local_mm_addrs: {self.local_mm_addrs}")
             if addr is None:
-                logger.warning(
-                    "[EC_WORKER_SENDER] ✗ Skipping send for mm_hash=%s: "
-                    "no entry in local_mm_addrs",
-                    mm_hash[:16],
+                logger.debug(f"hero random at send cache force local_mm_addrs be None for mm_hash {mm_hash}")
+                raise RuntimeError(
+                    "[EC_WORKER_SENDER] ✗ No buffer entry for mm_hash=%s: "
+                    "Failing transfer.",
+                    mm_hash,
                 )
                 continue
 
@@ -847,13 +853,13 @@ class MooncakeECConnectorWorker:
                     "[EC_WORKER_RECEIVER] Transfer FAILED: got %s instead "
                     "of TRANS_DONE for mm_hashes=%s",
                     ret_msg,
-                    [h[:16] for h in mm_hash_list],
+                    [h for h in mm_hash_list],
                 )
                 transfer_failed = True
         except zmq.Again:
             logger.error(
                 "[EC_WORKER_RECEIVER] Transfer TIMEOUT after 10s for mm_hashes=%s",
-                [h[:16] for h in mm_hash_list],
+                [h for h in mm_hash_list],
             )
             transfer_failed = True
         except zmq.ContextTerminated:
@@ -864,14 +870,18 @@ class MooncakeECConnectorWorker:
         except Exception as e:
             logger.exception(
                 "[EC_WORKER_RECEIVER] ✗ Transfer request failed for mm_hashes=%s: %s",
-                [h[:16] for h in mm_hash_list],
+                [h for h in mm_hash_list],
                 e,
             )
             transfer_failed = True
         finally:
             sock.close()
 
+        # # hero: manually trigger load cache fail
+        # transfer_failed = random.random() < 0.1 # randomly
+
         if transfer_failed:
+            logger.debug(f"hero: random transfer_failed for mm_hash_list {mm_hash_list}")
             # Free the receive buffer slots allocated in group_ec_pull().
             # The remote side never wrote valid data into them (or the
             # transfer was incomplete), so release the space immediately
@@ -888,7 +898,7 @@ class MooncakeECConnectorWorker:
             logger.warning(
                 "[EC_WORKER_RECEIVER] Marked %d mm_hashes as failed: %s",
                 len(mm_hash_list),
-                [h[:16] for h in mm_hash_list],
+                [h for h in mm_hash_list],
             )
             async with self.finished_recving_mm_hashes.finish_recv_cond:
                 logger.debug(f"hero: 1st _all_mm_hashes_resolved")
@@ -905,7 +915,7 @@ class MooncakeECConnectorWorker:
             ):
                 logger.debug(
                     "[EC_WORKER_RECEIVER] Loading mm_hash=%s from addr=0x%x, size=%d bytes",
-                    mm_hash[:16],
+                    mm_hash,
                     addr,
                     num_bytes,
                 )
@@ -920,7 +930,7 @@ class MooncakeECConnectorWorker:
         except Exception as e:
             logger.exception(
                 "[EC_WORKER_RECEIVER] ✗ Failed to load tensors for mm_hashes=%s: %s",
-                [h[:16] for h in mm_hash_list],
+                [h for h in mm_hash_list],
                 e,
             )
             # Free all receive buffer slots. Some entries may have been
@@ -969,8 +979,8 @@ class MooncakeECConnectorWorker:
                 logger.debug(
                     "[EC_WORKER_RECEIVER] mm_hash=%s already in group, "
                     "appending req_id=%s",
-                    key.mm_hash[:16],
-                    key.req_id[:16],
+                    key.mm_hash,
+                    key.req_id,
                 )
 
         return ec_pulls
