@@ -1179,7 +1179,7 @@ class Scheduler(SchedulerInterface):
                     # EncodeCacheManager.
                     # Skip it - the EC connector will handle saving to external
                     # storage if needed in build_connector_meta().
-                    logger.warning(
+                    logger.debug(
                         "hero: check_and_update_cache returned True for "
                         "recently-failed EC mm_hash=%.16s req=%s — "
                         "cache was not properly invalidated!",

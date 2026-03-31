@@ -735,7 +735,7 @@ class MooncakeECConnectorWorker:
                 addr = self.local_mm_addrs.get(mm_hash)
                 # ##### hero####
                 # addr = None if random.random() < 0.1 else addr   # hero:
-                logger.debug(f"searching mm_hash {mm_hash} in self.local_mm_addrs: {self.local_mm_addrs}")
+                logger.debug(f"hero: searching mm_hash {mm_hash} in self.local_mm_addrs: {self.local_mm_addrs}")
             if addr is None:
                 logger.debug(f"hero random at send cache force local_mm_addrs be None for mm_hash {mm_hash}")
                 raise RuntimeError(
