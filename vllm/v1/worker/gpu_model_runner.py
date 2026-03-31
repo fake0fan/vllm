@@ -3239,7 +3239,7 @@ class GPUModelRunner(
             # logger.debug(f"hero: input_ids dtype: {self.input_ids.gpu.dtype}")
             # logger.debug(f"hero: input_ids min: {self.input_ids.gpu.min()}, max: {self.input_ids.gpu.max()}")
             # logger.debug(f"hero: num_scheduled_tokens: {num_scheduled_tokens}")
-            sliced_input_ids = self.input_ids.gpu[:num_scheduled_tokens]
+            # sliced_input_ids = self.input_ids.gpu[:num_scheduled_tokens]
             # logger.debug(f"hero: self.input_ids.gpu[:num_scheduled_tokens] shape: {sliced_input_ids.shape}")
             # logger.debug(f"hero: Sliced input_ids shape: {sliced_input_ids.shape}")
             # logger.debug(f"hero: Sliced input_ids min: {sliced_input_ids.min()}, max: {sliced_input_ids.max()}")
@@ -3252,14 +3252,14 @@ class GPUModelRunner(
             # logger.debug(f"hero: is_multimodal is_mm_embed shape: {is_mm_embed.shape}")
             # logger.debug(f"hero: is_multimodal is_mm_embed: {is_mm_embed}")
 
-            neg_positions = torch.where(sliced_input_ids == -1)  # hero:
-            logger.debug(f"hero: -1 tokens found at positions: {neg_positions}")
+            # neg_positions = torch.where(sliced_input_ids == -1)  # hero:
+            # logger.debug(f"hero: -1 tokens found at positions: {neg_positions}")
 
             # neg_positions_full = torch.where(self.input_ids.gpu == -1)  # hero:
             # logger.debug(f"hero: -1 tokens found in full self.input_ids.gpu at positions: {neg_positions_full}")
 
-            if len(neg_positions[0]) > 0:
-                logger.debug(f"hero: -1 tokens exist")
+            # if len(neg_positions[0]) > 0:
+            #     logger.debug(f"hero: -1 tokens exist")
             # # torch.set_printoptions(threshold=float('inf'))  # or a very large number
             # # print(sliced_input_ids)
             # # torch.set_printoptions(profile="default")

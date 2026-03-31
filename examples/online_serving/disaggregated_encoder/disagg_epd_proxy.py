@@ -32,12 +32,14 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from itertools import cycle
+
 ###############################################################################
 # FastAPI app & global state
 ###############################################################################
 
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s"
+    level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s"
 )
 logger = logging.getLogger("proxy")
 
@@ -87,14 +89,14 @@ async def fanout_encoder_primer(
     Returns:
         dict mapping mm_hash to ec_transfer_params dict
     """
-    logger.info("[%s] Processing multimodal items...", req_id)
+    logger.debug("[%s] Processing multimodal items...", req_id)
 
     mm_items = extract_mm_items(orig_request)
     if not mm_items:
         logger.info("[%s] No multimodal items, skipping encoder", req_id)
         return {}  # nothing to do
 
-    logger.info("[%s] got %d multimodal items...", req_id, len(mm_items))
+    logger.debug("[%s] got %d multimodal items...", req_id, len(mm_items))
 
     tasks = []
 
@@ -193,7 +195,7 @@ async def fanout_encoder_primer(
                 str(e),
             )
 
-    logger.info(
+    logger.debug(
         "[%s] All %d encoder requests completed successfully, collected %d mm_hashes",
         req_id,
         len(mm_items),
@@ -204,7 +206,7 @@ async def fanout_encoder_primer(
     req_data = orig_request
     if aggregated_ec_transfer_params:
         req_data["ec_transfer_params"] = aggregated_ec_transfer_params
-        logger.info(
+        logger.debug(
             (
                 "[%s] Added aggregated_ec_transfer_params for %d mm_hashes "
                 "to prefill request"
@@ -227,7 +229,7 @@ async def maybe_prefill(
     - Else, skip and return the original request data for decode
     """
     if p_url:
-        logger.info("[%s] Processing through prefill: %s", req_id, p_url)
+        logger.debug("[%s] Processing through prefill: %s", req_id, p_url)
 
         prefill_response = await process_prefill_stage(req_data, p_url, req_id)
         # for nixl connector to facilitate kv transfer...
@@ -247,7 +249,7 @@ async def process_prefill_stage(
     req_id: str,
 ) -> dict:
     """Process request through Prefill stage and return kv_transfer_params"""
-    logger.info("[%s] Sending prefill request to: %s", req_id, p_url)
+    logger.debug("[%s] Sending prefill request to: %s", req_id, p_url)
 
     prefill_request = req_data.copy()
     prefill_request["kv_transfer_params"] = {
@@ -284,7 +286,7 @@ async def process_prefill_stage(
                 status_code=prefill_response.status,
                 detail={"error": "Prefill request failed", "message": error_text},
             )
-        logger.info("[%s] Prefill request completed successfully", req_id)
+        logger.debug("[%s] Prefill request completed successfully", req_id)
 
         return prefill_response
 
@@ -307,7 +309,7 @@ async def log_requests(request: Request, call_next):
     req_id = request.headers.get("x-request-id", str(uuid.uuid4()))
 
     # Log incoming request
-    logger.info(
+    logger.debug(
         ">>> [%s] %s %s from %s",
         req_id,
         request.method,
@@ -320,7 +322,7 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
 
         # Log response
-        logger.info(
+        logger.debug(
             "<<< [%s] %s %s completed with status %d",
             req_id,
             request.method,
@@ -357,6 +359,11 @@ async def on_startup() -> None:
         prefill_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     decode_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
+    global e_cycle, p_cycle, d_cycle
+    e_cycle = cycle(app.state.e_urls)
+    p_cycle = cycle(app.state.p_urls) if app.state.p_urls else None
+    d_cycle = cycle(app.state.d_urls)
+
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
@@ -385,7 +392,7 @@ async def forward_non_stream(
         req_data = await maybe_prefill(req_data, p_url, req_id)
 
         # Step 3: Process through Decode instance
-        logger.info("[%s] Forwarding to decode: %s", req_id, d_url)
+        logger.debug("[%s] Forwarding to decode: %s", req_id, d_url)
         headers = {"x-request-id": req_id}
 
         # Non-streaming response
@@ -407,13 +414,13 @@ async def forward_stream(
 ) -> AsyncIterator[str]:
     try:
         # Step 1: Process through Encoder instance (if has MM input)
-        await fanout_encoder_primer(req_data, e_urls, req_id)
+        req_data = await fanout_encoder_primer(req_data, e_urls, req_id)
 
         # Step 2: Process through Prefill instance
         req_data = await maybe_prefill(req_data, p_url, req_id)
 
         # Step 3: Process through Decode instance
-        logger.info("[%s] Starting streaming from decode: %s", req_id, d_url)
+        logger.debug("[%s] Starting streaming from decode: %s", req_id, d_url)
         headers = {"x-request-id": req_id}
 
         # Streaming response
@@ -427,7 +434,7 @@ async def forward_stream(
                 if chunk:
                     yield chunk.decode("utf-8", errors="ignore")
 
-        logger.info("[%s] Streaming completed", req_id)
+        logger.debug("[%s] Streaming completed", req_id)
 
     except HTTPException:
         logger.exception("[%s] HTTPException in forward_stream", req_id)
@@ -451,8 +458,10 @@ async def chat_completions(request: Request):
         req_id = request.headers.get("x-request-id", str(uuid.uuid4()))
 
         e_urls = app.state.e_urls  # we want the full list for fan-out
-        p_url = random.choice(app.state.p_urls) if app.state.p_urls else None
-        d_url = random.choice(app.state.d_urls)
+        # p_url = random.choice(app.state.p_urls) if app.state.p_urls else None
+        # d_url = random.choice(app.state.d_urls)
+        p_url = next(p_cycle) if p_cycle else None
+        d_url = next(d_cycle)
 
         is_streaming = req_data.get("stream", False)
 
