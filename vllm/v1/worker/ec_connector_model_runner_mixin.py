@@ -29,7 +29,6 @@ class ECConnectorModelRunnerMixin:
         mm_hash: str,
     ):
         if not has_ec_transfer():
-            logger.debug("Not have ec transfer please check")
             return
         connector = get_ec_transfer()
         connector.save_caches(encoder_cache=encoder_cache, mm_hash=mm_hash)

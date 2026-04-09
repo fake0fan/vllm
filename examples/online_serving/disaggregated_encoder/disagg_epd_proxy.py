@@ -26,7 +26,6 @@ import os
 import random
 import uuid
 from collections.abc import AsyncIterator
-from vllm.logger import init_logger
 
 import aiohttp
 import uvicorn

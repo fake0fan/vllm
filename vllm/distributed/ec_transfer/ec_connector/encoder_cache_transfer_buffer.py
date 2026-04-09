@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Simple buffer manager for Encoder Cache transfer.
 
-This module provides a simple GPU memory buffer manager for storing and
+This module provides a simple memory buffer manager for storing and
 retrieving encoder cache tensors during distributed transfer operations.
 
 Allocation strategy: circular (ring) buffer.
@@ -279,7 +279,7 @@ class EncoderCacheTransferBuffer:
             self._allocated.clear()
             self._offset_index.clear()
             self._next_offset = 0
-        logger.debug("ECBuffer cleaned up")
+        logger.debug("EC Buffer cleaned up")
 
     # ------------------------------------------------------------------
     # Properties
