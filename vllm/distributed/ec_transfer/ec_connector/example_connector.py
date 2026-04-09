@@ -55,7 +55,6 @@ class ECExampleConnector(ECConnectorBase):
             self._storage_path = transfer_config.get_from_extra_config(
                 "shared_storage_path", "/tmp"
             )
-            logger.debug(transfer_config)
             logger.debug("Shared storage path is %s", self._storage_path)
         else:
             raise ValueError("ec_transfer_config must be set for ECConnectorBase")
