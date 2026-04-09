@@ -1200,15 +1200,6 @@ class Scheduler(SchedulerInterface):
                 if self.encoder_cache_manager.check_and_update_cache(request, i):
                     # The encoder input is already computed and cached in
                     # EncodeCacheManager.
-                    # Skip it - the EC connector will handle saving to external
-                    # storage if needed in build_connector_meta().
-                    logger.debug(
-                        "hero: check_and_update_cache returned True for "
-                        "recently-failed EC mm_hash=%.16s req=%s — "
-                        "cache was not properly invalidated!",
-                        item_identifier,
-                        request.request_id,
-                    )
                     continue
 
             # If no encoder input chunking is allowed, we do not want to
@@ -1234,7 +1225,6 @@ class Scheduler(SchedulerInterface):
                 # NOTE(woosuk): We assume that the encoder input tokens should
                 # be processed altogether, as the encoder usually uses
                 # bidirectional attention.
-                logger.debug(f"hero: it breaks here for mm_hash {item_identifier} / not can can_allocate")
                 if num_computed_tokens + shift_computed_tokens < start_pos:
                     # We only schedule the decoder tokens just before the
                     # encoder input.
@@ -1263,13 +1253,11 @@ class Scheduler(SchedulerInterface):
             # There's no embeddings in the current range of encoder placeholder tokens
             # so we can skip the encoder input.
             if curr_embeds_end - curr_embeds_start == 0:
-                logger.debug(f"hero: it continue here for mm_hash {item_identifier} / curr_embeds_end")
                 continue
 
             if self.ec_connector is not None and self.ec_connector.has_cache_item(
                 item_identifier, request
             ):
-                logger.debug(f"hero: it continue here for mm_hash {item_identifier} / has_cache_item")
                 mm_hashes_to_schedule.add(item_identifier)
                 external_load_encoder_input.append(i)
                 num_embeds_to_schedule += num_encoder_embeds

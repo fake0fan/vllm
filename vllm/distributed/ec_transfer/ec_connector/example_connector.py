@@ -89,10 +89,7 @@ class ECExampleConnector(ECConnectorBase):
             if mm_data.mm_hash in encoder_cache:
                 continue
             filename = self._generate_filename_debug(mm_data.mm_hash)
-            logger.debug(f"hero: start_load_caches for {mm_data.mm_hash}, filename: {filename}")
-            # force alter
-            # filename = filename + "sss"
-            # logger.debug(f"hero: force alter hash file name into {filename}")
+            logger.debug(f"start_load_caches for {mm_data.mm_hash}, filename: {filename}")
 
             ec_cache = safetensors.torch.load_file(
                 filename, device=current_platform.device_type

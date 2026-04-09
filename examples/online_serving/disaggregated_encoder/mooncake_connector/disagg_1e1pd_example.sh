@@ -8,7 +8,7 @@ declare -a PIDS=()
 ###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./logs}"
-mkdir -p $LOG_PATH
+mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19584}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19585}"
@@ -30,7 +30,6 @@ START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
-MOONCAKE_MASTER_LOG="$LOG_PATH/mooncake_master_$START_TIME.log"
 
 wait_for_server() {
     local port=$1
@@ -64,8 +63,8 @@ cleanup() {
         fi
     done
 
-    echo "Force killing mooncake processes"
-    pkill -f "mooncake_master"
+    # Kill the entire process group as backup
+    kill -- -$$ 2>/dev/null
 
     echo "All processes stopped."
     exit 0
@@ -86,7 +85,7 @@ vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 65536 \
+    --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config "{
@@ -94,8 +93,8 @@ vllm serve "$MODEL" \
         \"ec_role\": \"ec_producer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_2,mlx5_3\",
-            \"transfer_buffer_size\": \"3221225472\"
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
     >"${ENC_LOG}" 2>&1 &
@@ -117,8 +116,8 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
         \"ec_role\": \"ec_consumer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"mlx5_2,mlx5_3\",
-            \"transfer_buffer_size\": \"2147483648\"
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
     >"${PD_LOG}" 2>&1 &
@@ -155,14 +154,13 @@ vllm bench serve \
     --random-input-len 400 \
     --random-output-len 100 \
     --random-range-ratio 0.0 \
-    --random-mm-base-items-per-request 2 \
+    --random-mm-base-items-per-request 3 \
     --random-mm-num-mm-items-range-ratio 0 \
-    --random-mm-limit-mm-per-prompt '{"image":0,"video":2}' \
-    --random-mm-bucket-config '{(720, 1280, 120): 1.0}' \
+    --random-mm-limit-mm-per-prompt '{"image":3,"video":0}' \
+    --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
     --ignore-eos \
     --backend openai-chat \
     --endpoint /v1/chat/completions \
-    --request-rate 32 \
     --port $PROXY_PORT
 
 PIDS+=($!)

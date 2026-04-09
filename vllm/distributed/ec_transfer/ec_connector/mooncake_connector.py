@@ -45,8 +45,6 @@ except ImportError as e:
 if TYPE_CHECKING:
     from vllm.v1.request import Request
 
-import random # hero
-
 MMHash = str
 ReqId = str
 
@@ -293,7 +291,6 @@ class MooncakeECConnectorScheduler:
             has_remote_port = mm_hash_params.get("remote_port") is not None
             do_remote_encode = mm_hash_params.get("do_remote_encode", False)
 
-            logger.debug(f"hero: mm_hash_params {has_remote_host}, {has_remote_port}, {do_remote_encode} for identifier {identifier}")
             return has_remote_host and has_remote_port and do_remote_encode
 
         except Exception as e:
@@ -330,7 +327,6 @@ class MooncakeECConnectorScheduler:
                 )
 
             # Only trigger 1 EC transfer per mm_hash
-            logger.debug(f"hero: setting do_remote_encode to False for mm_hash {mm_hash} coz update_state_after_alloc")
             mm_hash_params["do_remote_encode"] = False
 
     def build_connector_meta(
@@ -347,11 +343,6 @@ class MooncakeECConnectorScheduler:
             if ec_transfer_params:
                 mm_hash_params = ec_transfer_params.get(mm_hash)
                 if mm_hash_params:
-                    ############ hero ##########
-                    # logger.debug(f"hero: before force change mm_hash {mm_hash}")
-                    # mm_hash = "xxxyyy" + mm_hash
-                    # logger.debug(f"hero: now force change mm_hash into {mm_hash}")
-                    ############ hero ##########
                     meta.add_recv_req(
                         req_id=request.request_id,
                         mm_hash=mm_hash,
@@ -360,8 +351,7 @@ class MooncakeECConnectorScheduler:
                             mm_addr=0,
                         ),
                         remote_host=mm_hash_params["remote_host"],
-                        # remote_port=mm_hash_params["remote_port"], # !!!!!!!!!!!hero change it
-                        remote_port=1234,   # hero
+                        remote_port=mm_hash_params["remote_port"],
                     )
 
         # Clear the lists once workers start the transfers
@@ -707,11 +697,7 @@ class MooncakeECConnectorWorker:
 
             with self._mm_lock:
                 addr = self.local_mm_addrs.get(mm_hash)
-                # ##### hero####
-                # addr = None if random.random() < 0.1 else addr   # hero:
-                logger.debug(f"hero: searching mm_hash {mm_hash} in self.local_mm_addrs: {self.local_mm_addrs}")
             if addr is None:
-                logger.debug(f"hero random at send cache force local_mm_addrs be None for mm_hash {mm_hash}")
                 raise RuntimeError(
                     "[EC_WORKER_SENDER] ✗ No buffer entry for mm_hash=%s: "
                     "Failing transfer.",
@@ -746,7 +732,6 @@ class MooncakeECConnectorWorker:
         Returns:
             Tuple of (finished_mm_hashes, failed_mm_hashes)
         """
-        logger.debug(f"hero: fetch_finished_recving_mm_hashes")
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             finished_recving_mm_hashes = self.finished_recving_mm_hashes.set
             self.finished_recving_mm_hashes.set = set()
@@ -755,7 +740,7 @@ class MooncakeECConnectorWorker:
             failed_recving_mm_hashes = self.failed_recving_mm_hashes.set
             self.failed_recving_mm_hashes.set = set()
 
-        logger.debug(f"hero: finished_recving_mm_hashes, failed_recving_mm_hashes {finished_recving_mm_hashes, failed_recving_mm_hashes}")
+        logger.debug(f"finished_recving_mm_hashes, failed_recving_mm_hashes: {finished_recving_mm_hashes, failed_recving_mm_hashes}")
         return finished_recving_mm_hashes, failed_recving_mm_hashes
 
     def get_finished(
@@ -769,7 +754,6 @@ class MooncakeECConnectorWorker:
         Returns:
             Tuple of (finished_sending, finished_recving, failed_recving)
         """
-        logger.debug(f"hero: get_finished for finished_req_ids: {finished_req_ids}")
         fut = None
         if not self.is_producer:
             fut = asyncio.run_coroutine_threadsafe(
@@ -804,7 +788,6 @@ class MooncakeECConnectorWorker:
                 len(finished_recving_mm_hashes),
                 len(failed_recving_mm_hashes),
             )
-        logger.debug(f"hero: get_finished done")
         return (
             finished_sending_mm_hashes or None,
             finished_recving_mm_hashes or None,
@@ -830,58 +813,49 @@ class MooncakeECConnectorWorker:
             ],
         )
 
-        logger.debug(f"hero: start receive_ec for mm_hashes {mm_hashes}; metadata: {metadata}")
-
         encoded_data = self._encoder.encode(metadata)
 
         # Send query for the request.
         sock: zmq.asyncio.Socket = make_zmq_socket(
             self.async_zmq_ctx, path, zmq.REQ, bind=False, linger=0
         )
-        # EC cache is typically smaller than KV cache, 10s should be sufficient
-        # sock.setsockopt(zmq.RCVTIMEO, 10000)  # 10 seconds timeout
-        sock.setsockopt(zmq.RCVTIMEO, 100)  # hero: 0.1 seconds timeout
+        sock.setsockopt(zmq.RCVTIMEO, 1000)  # 1 seconds timeout
 
-        transfer_failed = False
+        transfer_failed = True
         try:
             await sock.send(encoded_data)
 
             ret_msg = await sock.recv()
 
-            if ret_msg != TRANS_DONE:
+            if ret_msg == TRANS_DONE:
+                transfer_failed = False
+            else:
                 logger.error(
                     "[EC_WORKER_RECEIVER] Transfer FAILED: got %s instead "
                     "of TRANS_DONE for mm_hashes=%s",
                     ret_msg,
                     [h for h in mm_hash_list],
                 )
-                transfer_failed = True
         except zmq.Again:
-            logger.error(
+            logger.exception(
                 "[EC_WORKER_RECEIVER] Transfer TIMEOUT after 10s for mm_hashes=%s",
                 [h for h in mm_hash_list],
             )
-            transfer_failed = True
         except zmq.ContextTerminated:
-            logger.debug(
+            logger.exception(
                 "[EC_WORKER_RECEIVER] ZMQ context terminated, exiting receiver thread."
             )
-            transfer_failed = True
         except Exception as e:
             logger.exception(
                 "[EC_WORKER_RECEIVER] ✗ Transfer request failed for mm_hashes=%s: %s",
                 [h for h in mm_hash_list],
                 e,
             )
-            transfer_failed = True
         finally:
             sock.close()
 
-        # # hero: manually trigger load cache fail
-        # transfer_failed = random.random() < 0.1 # randomly
 
         if transfer_failed:
-            logger.debug(f"hero: random transfer_failed for mm_hash_list {mm_hash_list}")
             # Free the receive buffer slots allocated in group_ec_pull().
             # The remote side never wrote valid data into them (or the
             # transfer was incomplete), so release the space immediately
@@ -901,7 +875,6 @@ class MooncakeECConnectorWorker:
                 [h for h in mm_hash_list],
             )
             async with self.finished_recving_mm_hashes.finish_recv_cond:
-                logger.debug(f"hero: 1st _all_mm_hashes_resolved")
                 if self._all_mm_hashes_resolved():
                     self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
             return
@@ -946,14 +919,12 @@ class MooncakeECConnectorWorker:
             async with self.failed_recving_mm_hashes.lock:
                 self.failed_recving_mm_hashes.set.update(mm_hash_list)
             async with self.finished_recving_mm_hashes.finish_recv_cond:
-                logger.debug(f"hero: 2nd _all_mm_hashes_resolved")
                 if self._all_mm_hashes_resolved():
                     self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
             return
 
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             self.finished_recving_mm_hashes.set.update(mm_hash_list)
-            logger.debug(f"hero: 3rd _all_mm_hashes_resolved")
             if self._all_mm_hashes_resolved():
                 self.finished_recving_mm_hashes.finish_recv_cond.notify_all()
 
@@ -995,39 +966,29 @@ class MooncakeECConnectorWorker:
         )
 
         ec_pulls = self.group_ec_pull(metadata)
-        logger.debug(f"hero: ec_pulls.items(): {ec_pulls.items()}")
         for path, mm_hashes_meta in ec_pulls.items():
             mm_hash_items = [
                 ((mm_hash, req_ids), meta)
                 for mm_hash, (req_ids, meta) in mm_hashes_meta.items()
             ]
-            logger.debug(f"hero: start_load_caches for mm_hash_items {mm_hash_items}")
+            logger.debug(f"start_load_caches for mm_hash_items {mm_hash_items}")
             asyncio.run_coroutine_threadsafe(
                 self.receive_ec(path, mm_hash_items, encoder_cache), self.receiver_loop
             )
-            logger.debug(f"hero after self.receive_ec")
 
     def _all_mm_hashes_resolved(self) -> bool:
         """Return True when every hash in mm_hashes_need_recv has reached a
         terminal state — either successfully received or failed."""
-        ############ hero ##########
-        # return (
-        #     self.finished_recving_mm_hashes.set | self.failed_recving_mm_hashes.set
-        # ) == self.mm_hashes_need_recv
         resolved = (
             self.finished_recving_mm_hashes.set | self.failed_recving_mm_hashes.set
         ) == self.mm_hashes_need_recv
-        logger.debug(f"hero: _all_mm_hashes_resolved: {resolved}, {self.finished_recving_mm_hashes.set}, {self.failed_recving_mm_hashes.set}, {self.mm_hashes_need_recv}")
         return resolved
-        ############ hero ##########
 
     async def _wait_for_load(self) -> None:
-        logger.debug(f"hero: _wait_for_load start")
         async with self.finished_recving_mm_hashes.finish_recv_cond:
             await self.finished_recving_mm_hashes.finish_recv_cond.wait_for(
                 self._all_mm_hashes_resolved
             )
-        logger.debug(f"hero: _wait_for_load done")
 
     def wait_for_load(self) -> set[str]:
         fut = asyncio.run_coroutine_threadsafe(
