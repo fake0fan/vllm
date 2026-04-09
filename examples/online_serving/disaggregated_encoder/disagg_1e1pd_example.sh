@@ -19,8 +19,7 @@ GPU_PD="${GPU_PD:-1}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
-
-NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
 
 ###############################################################################
 # Helpers
@@ -92,7 +91,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 262140 \
+    --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
@@ -176,11 +175,10 @@ vllm bench serve \
     --random-mm-base-items-per-request 3 \
     --random-mm-num-mm-items-range-ratio 0 \
     --random-mm-limit-mm-per-prompt '{"image":3,"video":0}' \
-    --random-mm-bucket-config '{(2560, 1440, 1): 1.0}' \
+    --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
     --ignore-eos \
     --backend openai-chat \
     --endpoint /v1/chat/completions \
-    --request-rate 16 \
     --port $PROXY_PORT
 
 PIDS+=($!)

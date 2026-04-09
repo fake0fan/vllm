@@ -2513,7 +2513,6 @@ class GPUModelRunner(
             - mm_lora_refs: List of (req_id, placeholder_range) for each item
         """
         scheduled_encoder_inputs = scheduler_output.scheduled_encoder_inputs
-        logger.debug(f"hero: scheduled_encoder_inputs in _batch_mm_inputs_from_scheduler: {scheduled_encoder_inputs}")
         if not scheduled_encoder_inputs:
             return [], [], []
 
@@ -2545,7 +2544,6 @@ class GPUModelRunner(
 
         if not mm_kwargs:
             return []
-        logger.debug(f"hero: mm_hashes {mm_hashes} enter _execute_mm_encoder")
         should_time = bool(
             self.observability_config
             and self.observability_config.enable_mm_processor_stats
@@ -2676,7 +2674,6 @@ class GPUModelRunner(
                 # 2. A list or tuple (length: num_items) of tensors,
                 # each of shape (feature_size, hidden_size) in case the feature
                 # size is dynamic depending on the input multimodal items.
-                logger.debug(f"hero: current_item_idx in else: {current_item_idx}")
                 with self.timed_encoder_operation(
                     should_time, mm_lora_refs, current_item_idx, num_items
                 ):
@@ -2690,7 +2687,7 @@ class GPUModelRunner(
         # Cache the encoder outputs by mm_hash
         for mm_hash, output in zip(mm_hashes, encoder_outputs):
             self.encoder_cache[mm_hash] = output
-            logger.debug("[GPU Model Runner] Finish execute for mm hash %s", mm_hash)
+            logger.debug("Finish execute for mm hash %s", mm_hash)
             self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
 
         return encoder_outputs
@@ -2701,7 +2698,6 @@ class GPUModelRunner(
         shift_computed_tokens: int = 0,
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-        logger.debug(f"hero: total_num_scheduled_tokens: {total_num_scheduled_tokens}")
 
         # Swap to the other buffer to avoid race condition with previous
         # iteration's async copy that may still be reading from CPU.
@@ -2717,8 +2713,6 @@ class GPUModelRunner(
         should_sync_xdrope_positions = False
 
         ec_failed_mm_hashes = self.maybe_wait_for_ec_load()
-        logger.debug(f"hero: ec_failed_mm_hashes after maybe_wait_for_ec_load: {ec_failed_mm_hashes}")
-
         assert not ec_failed_mm_hashes, f"EC cache load failed for {ec_failed_mm_hashes}."
 
         for req_id in self.input_batch.req_ids:
@@ -2750,12 +2744,10 @@ class GPUModelRunner(
                     num_computed_tokens - start_pos + num_scheduled_tokens,
                     num_encoder_tokens,
                 )
-                logger.debug(f"hero: num_computed_tokens, start_pos, num_scheduled_tokens, num_encoder_tokens: {num_computed_tokens, start_pos, num_scheduled_tokens, num_encoder_tokens}")
                 assert start_idx < end_idx
                 curr_embeds_start, curr_embeds_end = (
                     pos_info.get_embeds_indices_in_range(start_idx, end_idx)
                 )
-                logger.debug(f"hero: curr_embeds_start, curr_embeds_end： {curr_embeds_start, curr_embeds_end}")
                 # If there are no embeddings in the current range, we skip
                 # gathering the embeddings.
                 if curr_embeds_start == curr_embeds_end:
@@ -2768,11 +2760,8 @@ class GPUModelRunner(
                 if (is_embed := pos_info.is_embed) is not None:
                     is_embed = is_embed[start_idx:end_idx]
                     mm_embeds_item = encoder_output[curr_embeds_start:curr_embeds_end]
-                    logger.debug(f"hero: start_idx, end_idx: {start_idx, end_idx}")
-                    logger.debug(f"hero: curr_embeds_start, curr_embeds_end: {curr_embeds_start, curr_embeds_end}")
                 else:
                     mm_embeds_item = encoder_output[start_idx:end_idx]
-                    logger.debug(f"hero: mm_embeds_item start_idx, end_idx: {start_idx,end_idx}")
 
                 req_start_pos = req_start_idx + start_pos - num_computed_tokens
                 # OR mask for overlapping mm_features (use_audio_in_video)
@@ -2780,12 +2769,10 @@ class GPUModelRunner(
                     is_mm_embed[req_start_pos + start_idx : req_start_pos + end_idx] = (
                         True
                     )
-                    logger.debug(f"hero: is_embed is None")
                 else:
                     is_mm_embed[
                         req_start_pos + start_idx : req_start_pos + end_idx
                     ] |= is_embed
-                    logger.debug(f"hero: is_embed is NOT None")
                 mm_embeds_req.append(mm_embeds_item)
 
             if self.is_multimodal_pruning_enabled and self.uses_mrope:
@@ -3038,50 +3025,6 @@ class GPUModelRunner(
                 self._execute_mm_encoder(scheduler_output)
                 mm_embeds, is_mm_embed = self._gather_mm_embeddings(scheduler_output)
 
-            ###hero###
-            # logger.debug(f"hero: input_ids shape: {self.input_ids.gpu.shape}")
-            # logger.debug(f"hero: input_ids dtype: {self.input_ids.gpu.dtype}")
-            # logger.debug(f"hero: input_ids min: {self.input_ids.gpu.min()}, max: {self.input_ids.gpu.max()}")
-            # logger.debug(f"hero: num_scheduled_tokens: {num_scheduled_tokens}")
-            # sliced_input_ids = self.input_ids.gpu[:num_scheduled_tokens]
-            # logger.debug(f"hero: self.input_ids.gpu[:num_scheduled_tokens] shape: {sliced_input_ids.shape}")
-            # logger.debug(f"hero: Sliced input_ids shape: {sliced_input_ids.shape}")
-            # logger.debug(f"hero: Sliced input_ids min: {sliced_input_ids.min()}, max: {sliced_input_ids.max()}")
-            # logger.debug(f"hero: Sliced input_id: {sliced_input_ids}")
-
-            # logger.debug(f"hero: multimodal_embeddings mm_embeds len: {len(mm_embeds)}")
-            # logger.debug(f"hero: multimodal_embeddings mm_embeds : {mm_embeds}")
-            # for i, tensor in enumerate(mm_embeds):
-            #     logger.debug(f"hero: multimodal_embeddings mm_embeds {i} shape: {tensor.shape}")
-            # logger.debug(f"hero: is_multimodal is_mm_embed shape: {is_mm_embed.shape}")
-            # logger.debug(f"hero: is_multimodal is_mm_embed: {is_mm_embed}")
-
-            # neg_positions = torch.where(sliced_input_ids == -1)  # hero:
-            # logger.debug(f"hero: -1 tokens found at positions: {neg_positions}")
-
-            # neg_positions_full = torch.where(self.input_ids.gpu == -1)  # hero:
-            # logger.debug(f"hero: -1 tokens found in full self.input_ids.gpu at positions: {neg_positions_full}")
-
-            # if len(neg_positions[0]) > 0:
-            #     logger.debug(f"hero: -1 tokens exist")
-            # # torch.set_printoptions(threshold=float('inf'))  # or a very large number
-            # # print(sliced_input_ids)
-            # # torch.set_printoptions(profile="default")
-            
-        
-            # num_expected_tokens = is_mm_embed.sum().item()  # hero:
-            # logger.debug(f"hero: num_expected_tokens: {num_expected_tokens}")
-            ###hero###
-
-            # if len(neg_positions[0]) > 0:
-            #     # brute-force replace -1 by 0
-            #     self.input_ids.gpu[:num_scheduled_tokens].clamp_(min=0)
-            #     logger.debug(f"hero: brute-force replace -1 by 0")
-
-            #     torch.set_printoptions(threshold=float('inf'))  # or a very large number
-            #     # print(self.input_ids.gpu[:num_scheduled_tokens])
-            #     torch.set_printoptions(profile="default")
-
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
@@ -3285,12 +3228,8 @@ class GPUModelRunner(
         for req_idx in range(num_sampled_tokens):
             if self.use_async_scheduling:
                 sampled_ids = [-1] if req_idx not in invalid_req_indices_set else None
-                logger.debug(f"hero: invalid_req_indices_set: {invalid_req_indices_set}")
-                logger.debug(f"hero: req_id {req_ids[req_idx]} with idx {req_idx} / {sampled_ids} in invalid_req_indices_set {invalid_req_indices_set}")
-                logger.debug(f"hero: sampled_ids = {sampled_ids} is assigned here for req_id: {req_ids[req_idx]} / req_idx: {req_idx}")
             else:
                 sampled_ids = valid_sampled_token_ids[req_idx]
-                logger.debug(f"hero: self.use_async_scheduling: {self.use_async_scheduling}")
 
             num_sampled_ids: int = len(sampled_ids) if sampled_ids else 0
 
@@ -3305,7 +3244,6 @@ class GPUModelRunner(
                 f"{self.max_model_len}"
             )
 
-            logger.debug(f"hero: sampled_ids start_idx:end_idx is {start_idx, end_idx} for  req_idx {req_idx}")
             self.input_batch.token_ids_cpu[req_idx, start_idx:end_idx] = sampled_ids
             self.input_batch.is_token_ids[req_idx, start_idx:end_idx] = True
             self.input_batch.num_tokens_no_spec[req_idx] = end_idx

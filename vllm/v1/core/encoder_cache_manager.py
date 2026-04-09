@@ -114,7 +114,6 @@ class EncoderCacheManager:
             self.num_freeable_slots -= num_encoder_embeds
 
         self.cached[mm_hash].add(request.request_id)
-        logger.debug(f"hero: self.cache {self.cached} when checking mm_hash {mm_hash}")
         return True
 
     def can_allocate(
