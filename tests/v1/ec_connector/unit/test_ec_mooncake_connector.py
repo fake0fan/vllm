@@ -4,7 +4,7 @@
 Unit tests for MooncakeECConnector.
 """
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 import torch
@@ -12,8 +12,10 @@ import torch
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
 from vllm.distributed.ec_transfer.ec_connector.mooncake_connector import (
+    MMHashMeta,
     MooncakeECConnector,
     MooncakeECConnectorMetadata,
+    TRANS_ERROR,
 )
 from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -40,7 +42,10 @@ class MockRequest:
                 mm_position=PlaceholderRange(offset=0, length=self._token_counts[i]),
             )
             self.mm_features.append(feature)
-        self.ec_transfer_params = ec_transfer_params or {}
+        # Normalize None to {} so scheduler-side logic does not call .get on None.
+        self.ec_transfer_params = (
+            ec_transfer_params if ec_transfer_params is not None else {}
+        )
 
     def get_num_encoder_embeds(self, input_id: int) -> int:
         assert input_id < len(self._token_counts)
@@ -79,6 +84,7 @@ def mock_vllm_config_producer():
     config = Mock(spec=VllmConfig)
     config.ec_transfer_config = Mock()
     config.ec_transfer_config.is_ec_producer = True
+    config.ec_transfer_config.is_ec_consumer = False
     config.ec_transfer_config.ec_connector_extra_config = {
         "device_name": "mlx5_0:1",
         "num_workers": 2,
@@ -100,6 +106,7 @@ def mock_vllm_config_consumer():
     config = Mock(spec=VllmConfig)
     config.ec_transfer_config = Mock()
     config.ec_transfer_config.is_ec_producer = False
+    config.ec_transfer_config.is_ec_consumer = True
     config.ec_transfer_config.ec_connector_extra_config = {
         "device_name": "mlx5_0:1",
         "num_workers": 2,
@@ -211,6 +218,7 @@ class TestMooncakeECConnectorBasics:
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0
         mock_engine.get_rpc_port.return_value = 5000
+        mock_engine.register_memory.return_value = 0
         mock_transfer_engine.return_value = mock_engine
 
         scheduler_connector = MooncakeECConnector(
@@ -288,7 +296,7 @@ class TestCacheExistence:
         mock_vllm_config_consumer,
         mock_parallel_state,
     ):
-        """Test has_cache_item returns False when no request provided."""
+        """Request=None hits the guard in try/except and returns False."""
         mock_get_ip.return_value = "127.0.0.1"
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0
@@ -352,12 +360,8 @@ class TestCacheExistence:
     @patch(
         "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_tensor_model_parallel_rank"
     )
-    @patch(
-        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.msgspec.msgpack"
-    )
-    def test_has_cache_item_probe_success(
+    def test_has_cache_item_consumer_optimistic_when_transfer_params_ok(
         self,
-        mock_msgpack,
         mock_tp_rank,
         mock_zmq_socket,
         mock_get_ip,
@@ -366,7 +370,7 @@ class TestCacheExistence:
         mock_request_with_3_mm,
         mock_parallel_state,
     ):
-        """Test has_cache_item successfully probes encoder and gets True response."""
+        """Scheduler returns True when ec_transfer_params allow remote EC (optimistic)."""
         mock_get_ip.return_value = "127.0.0.1"
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0
@@ -374,25 +378,12 @@ class TestCacheExistence:
         mock_transfer_engine.return_value = mock_engine
         mock_tp_rank.return_value = 0
 
-        # Mock ZMQ socket
-        mock_sock = MagicMock()
-        mock_sock.recv.return_value = b'{"exists": true, "num_encoder_tokens": 100}'
-        mock_zmq_socket.return_value = mock_sock
-
-        # Mock msgpack encoding/decoding
-        mock_msgpack.encode.return_value = b"encoded_request"
-        mock_response = Mock()
-        mock_response.exists = True
-        mock_msgpack.Decoder.return_value.decode.return_value = mock_response
-
         connector = MooncakeECConnector(
             vllm_config=mock_vllm_config_consumer,
             role=ECConnectorRole.SCHEDULER,
         )
 
-        connector.has_cache_item("img_hash_1", mock_request_with_3_mm)
-        # Should attempt probe (may return True if mocked correctly)
-        # Note: This test verifies the probe path is called
+        assert connector.has_cache_item("img_hash_1", mock_request_with_3_mm) is True
 
 
 class TestStateManagement:
@@ -570,6 +561,59 @@ class TestRequestFinished:
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
+
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.make_zmq_socket"
+    )
+    @patch(
+        "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"
+    )
+    @patch("vllm.distributed.ec_transfer.ec_connector.mooncake_connector.get_ip")
+    def test_wait_for_load_failure_when_producer_transfer_not_done(
+        self,
+        mock_get_ip,
+        mock_transfer_engine,
+        mock_make_zmq_socket,
+        mock_vllm_config_consumer,
+        mock_parallel_state,
+    ):
+        """Remote producer does not complete pull (e.g. cache missing); hash is failed."""
+        mock_get_ip.return_value = "127.0.0.1"
+        mock_engine = Mock()
+        mock_engine.initialize.return_value = 0
+        mock_engine.get_rpc_port.return_value = 5000
+        mock_engine.register_memory.return_value = 0
+        mock_transfer_engine.return_value = mock_engine
+
+        mock_sock = MagicMock()
+        mock_sock.send = AsyncMock()
+        mock_sock.recv = AsyncMock(return_value=TRANS_ERROR)
+        mock_sock.close = Mock()
+        mock_sock.setsockopt = Mock()
+        mock_make_zmq_socket.return_value = mock_sock
+
+        connector = MooncakeECConnector(
+            vllm_config=mock_vllm_config_consumer,
+            role=ECConnectorRole.WORKER,
+        )
+
+        metadata = MooncakeECConnectorMetadata()
+        mm_hash = "missing_on_producer"
+        metadata.add_recv_req(
+            "req_1",
+            mm_hash,
+            MMHashMeta(num_encoder_tokens=32, mm_addr=0),
+            "127.0.0.1",
+            5600,
+        )
+        connector.bind_connector_metadata(metadata)
+
+        encoder_cache: dict[str, torch.Tensor] = {}
+        connector.start_load_caches(encoder_cache)
+        failed = connector.wait_for_load()
+
+        assert mm_hash in failed
+        assert mm_hash not in encoder_cache
 
     @patch(
         "vllm.distributed.ec_transfer.ec_connector.mooncake_connector.TransferEngine"

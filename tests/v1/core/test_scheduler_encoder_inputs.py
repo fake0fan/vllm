@@ -24,7 +24,8 @@ class MockECConnector:
     def __init__(self):
         self.cache_items = set()
 
-    def has_cache_item(self, identifier: str) -> bool:
+    def has_cache_item(self, identifier: str, request=None) -> bool:
+        """Match ``ECConnectorBase.has_cache_item(identifier, request=...)``."""
         return identifier in self.cache_items
 
     def add_cache_item(self, identifier: str):
