@@ -8,20 +8,20 @@ declare -a PIDS=()
 ###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./logs}"
-mkdir -p $LOG_PATH
+mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_PORT="${PREFILL_PORT:-19535}"
 DECODE_PORT="${DECODE_PORT:-19536}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-5}"
-GPU_P="${GPU_P:-6}"
-GPU_D="${GPU_D:-4}"
+GPU_E="${GPU_E:-0}"
+GPU_P="${GPU_P:-1}"
+GPU_D="${GPU_D:-2}"
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
-NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
 
 export UCX_TLS=all
 export UCX_NET_DEVICES=all
@@ -29,6 +29,9 @@ export UCX_NET_DEVICES=all
 ###############################################################################
 # Helpers
 ###############################################################################
+# Find the git repository root directory
+GIT_ROOT=$(git rev-parse --show-toplevel)
+
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 P_LOG=$LOG_PATH/p_${START_TIME}.log
@@ -57,7 +60,7 @@ cleanup() {
     done
     
     # Wait a moment for graceful shutdown
-    sleep 2
+    wait "${PIDS[@]}" 2>/dev/null || true
     
     # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
@@ -81,20 +84,24 @@ trap cleanup TERM
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_EC_MOONCAKE_BOOTSTRAP_PORT=9198 \
+vllm serve "$MODEL" \
     --gpu-memory-utilization 0.4 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
-    --max-num-batched-tokens 65536 \
+    --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config "{
         \"ec_connector\": \"MooncakeECConnector\",
         \"ec_role\": \"ec_producer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"\"
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
     >"${ENC_LOG}" 2>&1 &
@@ -111,12 +118,14 @@ vllm serve "$MODEL" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-num-seqs 128 \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config "{
         \"ec_connector\": \"MooncakeECConnector\",
         \"ec_role\": \"ec_consumer\",
         \"ec_connector_extra_config\": {
             \"protocol\": \"rdma\",
-            \"device_name\": \"\"
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
     }" \
     --kv-transfer-config '{
@@ -169,21 +178,42 @@ echo "All services are up!"
 ###############################################################################
 # Benchmark
 ###############################################################################
+echo "Running benchmark (stream)..."
+
 vllm bench serve \
     --model $MODEL \
     --dataset-name random-mm \
-    --num-prompts 100 \
-    --random-input-len 150 \
+    --num-prompts $NUM_PROMPTS \
+    --random-input-len 400 \
     --random-output-len 100 \
     --random-range-ratio 0.0 \
-    --random-mm-base-items-per-request 1 \
+    --random-mm-base-items-per-request 3 \
     --random-mm-num-mm-items-range-ratio 0 \
-    --random-mm-limit-mm-per-prompt '{"image":10,"video":0}' \
+    --random-mm-limit-mm-per-prompt '{"image":3,"video":0}' \
     --random-mm-bucket-config '{(560, 560, 1): 1.0}' \
     --ignore-eos \
     --backend openai-chat \
     --endpoint /v1/chat/completions \
     --port $PROXY_PORT
+
+PIDS+=($!)
+
+###############################################################################
+# Single request with local image
+###############################################################################
+echo "Running single request with local image (non-stream)..."
+curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+    "model": "'"${MODEL}"'",
+    "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+        {"type": "text", "text": "What is in this image?"}
+    ]}
+    ]
+    }'
 
 # cleanup
 echo "cleanup..."

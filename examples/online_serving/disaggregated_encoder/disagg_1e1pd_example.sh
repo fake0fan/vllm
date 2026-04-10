@@ -105,8 +105,6 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
 
 PIDS+=($!)
 
-    # --max-num-batched-tokens 114688 \
-
 ###############################################################################
 # Prefill+Decode worker
 ###############################################################################
@@ -152,19 +150,7 @@ echo "All services are up!"
 # Benchmark
 ###############################################################################
 echo "Running benchmark (stream)..."
-# vllm bench serve \
-#   --model               "$MODEL" \
-#   --backend             openai-chat \
-#   --endpoint            /v1/chat/completions \
-#   --dataset-name        hf \
-#   --dataset-path        lmarena-ai/VisionArena-Chat \
-#   --seed                0 \
-#   --num-prompts         "$NUM_PROMPTS" \
-#   --port                "$PROXY_PORT"
 
-###############################################################################
-# Benchmark
-###############################################################################
 vllm bench serve \
     --model $MODEL \
     --dataset-name random-mm \
@@ -199,7 +185,6 @@ curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
     ]}
     ]
     }'
-
 
 # cleanup
 echo "cleanup..."

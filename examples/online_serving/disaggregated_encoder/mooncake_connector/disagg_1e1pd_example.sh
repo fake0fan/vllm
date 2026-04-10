@@ -10,12 +10,12 @@ MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./logs}"
 mkdir -p "$LOG_PATH"
 
-ENCODE_PORT="${ENCODE_PORT:-19584}"
-PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19585}"
-PROXY_PORT="${PROXY_PORT:-10008}"
+ENCODE_PORT="${ENCODE_PORT:-19534}"
+PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
+PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-6}"
-GPU_PD="${GPU_PD:-7}"
+GPU_E="${GPU_E:-0}"
+GPU_PD="${GPU_PD:-1}"
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
@@ -147,6 +147,8 @@ echo "All services are up!"
 ###############################################################################
 # Benchmark
 ###############################################################################
+echo "Running benchmark (stream)..."
+
 vllm bench serve \
     --model $MODEL \
     --dataset-name random-mm \
@@ -181,7 +183,7 @@ curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
     ]}
     ]
     }'
-    
+
 # cleanup
 echo "cleanup..."
 cleanup
