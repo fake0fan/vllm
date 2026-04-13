@@ -11,20 +11,14 @@ LOG_PATH="${LOG_PATH:-./logs}"
 mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
-PREFILL_PORT="${PREFILL_PORT:-19535}"
-DECODE_PORT="${DECODE_PORT:-19536}"
+PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
 GPU_E="${GPU_E:-0}"
-GPU_P="${GPU_P:-0}"
-GPU_D="${GPU_D:-1}"
+GPU_PD="${GPU_PD:-1}"
 
-EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
-
-export UCX_TLS=all
-export UCX_NET_DEVICES=all
 
 ###############################################################################
 # Helpers
@@ -34,8 +28,7 @@ GIT_ROOT=$(git rev-parse --show-toplevel)
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
-P_LOG=$LOG_PATH/p_${START_TIME}.log
-D_LOG=$LOG_PATH/d_${START_TIME}.log
+PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
 
 wait_for_server() {
@@ -60,7 +53,7 @@ cleanup() {
     done
     
     # Wait a moment for graceful shutdown
-    sleep 2
+    wait "${PIDS[@]}" 2>/dev/null || true
     
     # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
@@ -69,10 +62,10 @@ cleanup() {
             kill -9 "$pid" 2>/dev/null
         fi
     done
-    
+
     # Kill the entire process group as backup
     kill -- -$$ 2>/dev/null
-    
+
     echo "All processes stopped."
     exit 0
 }
@@ -81,18 +74,13 @@ trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
-# clear previous cache
-echo "remove previous ec cache folder"
-rm -rf "$EC_SHARED_STORAGE_PATH"
-
-echo "make ec cache folder"
-mkdir -p "$EC_SHARED_STORAGE_PATH"
-
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.01 \
+CUDA_VISIBLE_DEVICES="$GPU_E" \
+VLLM_EC_MOONCAKE_BOOTSTRAP_PORT=9198 \
+vllm serve "$MODEL" \
+    --gpu-memory-utilization 0.4 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
@@ -100,85 +88,60 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --max-num-batched-tokens 114688 \
     --max-num-seqs 128 \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
-    --ec-transfer-config '{
-        "ec_connector": "ECExampleConnector",
-        "ec_role": "ec_producer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
+    --ec-transfer-config "{
+        \"ec_connector\": \"MooncakeECConnector\",
+        \"ec_role\": \"ec_producer\",
+        \"ec_connector_extra_config\": {
+            \"protocol\": \"rdma\",
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
-    }' \
+    }" \
     >"${ENC_LOG}" 2>&1 &
 
 PIDS+=($!)
 
 ###############################################################################
-# Prefill worker
+# Prefill+Decode worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_P" \
-UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT=5559 \
-vllm serve "$MODEL" \
+CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
     --gpu-memory-utilization 0.7 \
-    --port "$PREFILL_PORT" \
+    --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-num-seqs 128 \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
-    --ec-transfer-config '{
-        "ec_connector": "ECExampleConnector",
-        "ec_role": "ec_consumer",
-        "ec_connector_extra_config": {
-            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
+    --ec-transfer-config "{
+        \"ec_connector\": \"MooncakeECConnector\",
+        \"ec_role\": \"ec_consumer\",
+        \"ec_connector_extra_config\": {
+            \"protocol\": \"rdma\",
+            \"device_name\": \"mlx5_2,mlx5_4\",
+            \"transfer_buffer_size\": \"1073741824\"
         }
-    }' \
-    --kv-transfer-config '{
-        "kv_connector": "NixlConnector",
-        "kv_role": "kv_producer"
-    }' \
-    >"${P_LOG}" 2>&1 &
-
-PIDS+=($!)
-
-###############################################################################
-# Decode worker
-###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_D" \
-UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT=6000 \
-vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
-    --port "$DECODE_PORT" \
-    --enforce-eager \
-    --enable-request-id-headers \
-    --max-num-seqs 128 \
-    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
-    --kv-transfer-config '{
-        "kv_connector": "NixlConnector",
-        "kv_role": "kv_consumer"
-    }' \
-    >"${D_LOG}" 2>&1 &
+    }" \
+    >"${PD_LOG}" 2>&1 &
 
 PIDS+=($!)
 
 # Wait for workers
-wait_for_server "$ENCODE_PORT"
-wait_for_server "$PREFILL_PORT"
-wait_for_server "$DECODE_PORT"
+wait_for_server $ENCODE_PORT
+wait_for_server $PREFILL_DECODE_PORT
 
 ###############################################################################
 # Proxy
 ###############################################################################
-python disagg_epd_proxy.py \
+python ../disagg_epd_proxy.py \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
-    --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
-    --decode-servers-urls "http://localhost:$DECODE_PORT" \
+    --prefill-servers-urls "disable" \
+    --decode-servers-urls "http://localhost:$PREFILL_DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
 
 PIDS+=($!)
 
-wait_for_server "$PROXY_PORT"
+wait_for_server $PROXY_PORT
 echo "All services are up!"
 
 ###############################################################################
