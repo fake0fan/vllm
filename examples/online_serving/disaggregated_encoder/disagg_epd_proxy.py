@@ -411,7 +411,7 @@ async def forward_non_stream(
 
 async def forward_stream(
     req_data: dict, req_id: str, e_urls: list[str], p_url: str, d_url: str
-) -> AsyncIterator[str]:
+) -> AsyncIterator[bytes]:
     try:
         # Step 1: Process through Encoder instance (if has MM input)
         req_data = await fanout_encoder_primer(req_data, e_urls, req_id)
@@ -430,9 +430,9 @@ async def forward_stream(
             headers=headers,
         ) as resp:
             resp.raise_for_status()
-            async for chunk in resp.content.iter_chunked(1024):
+            async for chunk in resp.content.iter_any():
                 if chunk:
-                    yield chunk.decode("utf-8", errors="ignore")
+                    yield chunk
 
         logger.debug("[%s] Streaming completed", req_id)
 
