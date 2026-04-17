@@ -16,11 +16,29 @@ DECODE_PORT="${DECODE_PORT:-19536}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
 GPU_E="${GPU_E:-0}"
-GPU_P="${GPU_P:-1}"
-GPU_D="${GPU_D:-2}"
+GPU_P="${GPU_P:-0}"
+GPU_D="${GPU_D:-1}"
+
+# Device platform and affinity env name.
+# DEVICE_PLATFORM supports: cuda, xpu
+DEVICE_PLATFORM="${DEVICE_PLATFORM:-cuda}"
+if [[ -z "${DEVICE_AFFINITY_ENV:-}" ]]; then
+    if [[ "${DEVICE_PLATFORM,,}" == "xpu" ]]; then
+        DEVICE_AFFINITY_ENV="ZE_AFFINITY_MASK"
+    else
+        DEVICE_AFFINITY_ENV="CUDA_VISIBLE_DEVICES"
+    fi
+fi
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 NUM_PROMPTS="${NUM_PROMPTS:-100}"             # number of prompts to send in benchmark
+
+# Serve args
+GPU_MEMORY_UTILIZATION_E="${GPU_MEMORY_UTILIZATION_E:-0.01}"
+GPU_MEMORY_UTILIZATION_P="${GPU_MEMORY_UTILIZATION_P:-0.7}"
+GPU_MEMORY_UTILIZATION_D="${GPU_MEMORY_UTILIZATION_D:-0.7}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-128}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 
 export UCX_TLS=all
 export UCX_NET_DEVICES=all
@@ -83,16 +101,17 @@ trap cleanup TERM
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" \
+env "$DEVICE_AFFINITY_ENV=$GPU_E" \
 VLLM_EC_MOONCAKE_BOOTSTRAP_PORT=9198 \
 vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.4 \
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION_E" \
     --port "$ENCODE_PORT" \
     --enforce-eager \
+    --mm-encoder-only \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
     --max-num-batched-tokens 114688 \
-    --max-num-seqs 128 \
+    --max-num-seqs "$MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config "{
         \"ec_connector\": \"MooncakeECConnector\",
@@ -110,15 +129,16 @@ PIDS+=($!)
 ###############################################################################
 # Prefill worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_P" \
+env "$DEVICE_AFFINITY_ENV=$GPU_P" \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5559 \
 vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION_P" \
     --port "$PREFILL_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 128 \
+    --max-num-seqs "$MAX_NUM_SEQS" \
+    --max-model-len "$MAX_MODEL_LEN" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config "{
         \"ec_connector\": \"MooncakeECConnector\",
@@ -140,15 +160,16 @@ PIDS+=($!)
 ###############################################################################
 # Decode worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_D" \
+env "$DEVICE_AFFINITY_ENV=$GPU_D" \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=6000 \
 vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION_D" \
     --port "$DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 128 \
+    --max-num-seqs "$MAX_NUM_SEQS" \
+    --max-model-len "$MAX_MODEL_LEN" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --kv-transfer-config '{
         "kv_connector": "NixlConnector",

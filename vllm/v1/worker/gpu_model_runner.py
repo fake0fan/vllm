@@ -2719,6 +2719,7 @@ class GPUModelRunner(
 
         if not mm_kwargs:
             return []
+
         should_time = bool(
             self.observability_config
             and self.observability_config.enable_mm_processor_stats
@@ -2862,6 +2863,7 @@ class GPUModelRunner(
                 # 2. A list or tuple (length: num_items) of tensors,
                 # each of shape (feature_size, hidden_size) in case the feature
                 # size is dynamic depending on the input multimodal items.
+
                 with self.timed_encoder_operation(
                     should_time, mm_lora_refs, current_item_idx, num_items
                 ):
