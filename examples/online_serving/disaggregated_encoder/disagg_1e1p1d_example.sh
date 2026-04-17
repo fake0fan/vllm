@@ -113,6 +113,7 @@ env "$DEVICE_AFFINITY_ENV=$GPU_E" vllm serve "$MODEL" \
     --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION_E" \
     --port "$ENCODE_PORT" \
     --enforce-eager \
+    --mm-encoder-only \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
     --max-num-batched-tokens 114688 \
