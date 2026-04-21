@@ -315,7 +315,7 @@ case "$MODE" in
     ;;
   *)
     echo "Usage:"
-    echo "  $0 --eager      # turn on eager enforce flag for EVERY instace"
+    echo "  $0 --eager      # turn on eager enforce flag for EVERY instance"
     echo "  $0 --baseline   # start baseline (DP=4) and run benchmarks"
     echo "  $0 --epd        # start EPD (E + 3xPD + proxy) and run benchmarks"
     echo "  $0 --cleanup    # kill vLLM/proxy processes"

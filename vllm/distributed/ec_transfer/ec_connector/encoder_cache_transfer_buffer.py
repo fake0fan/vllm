@@ -37,7 +37,7 @@ class BufferSlot:
     """Represents an allocated slot in the buffer."""
 
     offset: int  # Offset from base address in bytes
-    size: int    # Size in bytes
+    size: int  # Size in bytes
 
 
 class EncoderCacheTransferBuffer:
@@ -137,7 +137,9 @@ class EncoderCacheTransferBuffer:
                 # Tail too small: wrap the write head back to 0.
                 logger.debug(
                     "Ring wrap: _next_offset=%d, size=%d, buffer_size=%d",
-                    self._next_offset, size, self.buffer_size,
+                    self._next_offset,
+                    size,
+                    self.buffer_size,
                 )
                 self._next_offset = 0
                 offset = 0
@@ -152,9 +154,11 @@ class EncoderCacheTransferBuffer:
             self._next_offset = offset + size
 
             logger.debug(
-                "Allocated slot: addr=0x%x, offset=%d, size=%d, "
-                "next_offset=%d",
-                addr, offset, size, self._next_offset,
+                "Allocated slot: addr=0x%x, offset=%d, size=%d, next_offset=%d",
+                addr,
+                offset,
+                size,
+                self._next_offset,
             )
             return addr
 
@@ -332,7 +336,9 @@ class EncoderCacheTransferBuffer:
             slot = self._allocated.pop(addr)
             logger.debug(
                 "Evicted slot (ring): addr=0x%x, offset=%d, size=%d",
-                addr, offset, slot.size,
+                addr,
+                offset,
+                slot.size,
             )
             if self.on_free is not None:
                 self.on_free(addr)

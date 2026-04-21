@@ -163,10 +163,11 @@ class MooncakeECConnector(ECConnectorBase):
     def has_cache_item(
         self,
         identifier: str,
-        request: "Request" = None,
+        request: "Request | None" = None,
     ) -> bool:
         """Check if encoder cache exists in remote producer for a single mm item."""
         assert self.connector_scheduler is not None
+        assert request is not None
         return self.connector_scheduler.has_cache_item(identifier, request)
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:

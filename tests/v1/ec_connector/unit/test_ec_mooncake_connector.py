@@ -12,10 +12,10 @@ import torch
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
 from vllm.distributed.ec_transfer.ec_connector.mooncake_connector import (
+    TRANS_ERROR,
     MMHashMeta,
     MooncakeECConnector,
     MooncakeECConnectorMetadata,
-    TRANS_ERROR,
 )
 from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -370,7 +370,7 @@ class TestCacheExistence:
         mock_request_with_3_mm,
         mock_parallel_state,
     ):
-        """Scheduler returns True when ec_transfer_params allow remote EC (optimistic)."""
+        """Scheduler returns True when remote EC is allowed."""
         mock_get_ip.return_value = "127.0.0.1"
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0
@@ -577,7 +577,7 @@ class TestEdgeCases:
         mock_vllm_config_consumer,
         mock_parallel_state,
     ):
-        """Remote producer does not complete pull (e.g. cache missing); hash is failed."""
+        """Remote producer does not complete pull."""
         mock_get_ip.return_value = "127.0.0.1"
         mock_engine = Mock()
         mock_engine.initialize.return_value = 0

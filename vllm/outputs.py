@@ -104,7 +104,7 @@ class RequestOutput:
                                   None if decoder-only.
         num_cached_tokens: The number of tokens with prefix cache hit.
         kv_transfer_params: The params for remote K/V transfer.
-        ec_tranfer_params: The params for remote EC transfer.
+        ec_transfer_params: The params for remote EC transfer.
     """
 
     def __init__(

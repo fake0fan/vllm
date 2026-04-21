@@ -214,7 +214,7 @@ class ECConnectorBase(ABC):
     def has_cache_item(
         self,
         identifier: str,
-        request: "Request" = None,
+        request: "Request | None" = None,
     ) -> bool:
         """
         Check if a single encoder cache exists

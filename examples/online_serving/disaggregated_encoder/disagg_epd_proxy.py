@@ -26,21 +26,18 @@ import os
 import random
 import uuid
 from collections.abc import AsyncIterator
+from itertools import cycle
 
 import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from itertools import cycle
-
 ###############################################################################
 # FastAPI app & global state
 ###############################################################################
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("proxy")
 
 app = FastAPI()

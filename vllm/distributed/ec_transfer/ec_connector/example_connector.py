@@ -88,7 +88,11 @@ class ECExampleConnector(ECConnectorBase):
             if mm_data.mm_hash in encoder_cache:
                 continue
             filename = self._generate_filename_debug(mm_data.mm_hash)
-            logger.debug(f"start_load_caches for {mm_data.mm_hash}, filename: {filename}")
+            logger.debug(
+                "start_load_caches for %s, filename: %s",
+                mm_data.mm_hash,
+                filename,
+            )
 
             ec_cache = safetensors.torch.load_file(
                 filename, device=current_platform.device_type
@@ -124,7 +128,7 @@ class ECExampleConnector(ECConnectorBase):
     def has_cache_item(
         self,
         identifier: str,
-        request: "Request" = None,
+        request: "Request | None" = None,
     ) -> bool:
         """
         Check if cache exist externally for the media
