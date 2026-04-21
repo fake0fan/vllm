@@ -834,9 +834,6 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
-                # Count the number of prefix cached tokens.
-                if request.num_cached_tokens < 0:
-                    request.num_cached_tokens = num_computed_tokens
                 # Encoder-related.
                 if encoder_inputs_to_schedule:
                     scheduled_encoder_inputs[request_id] = encoder_inputs_to_schedule
@@ -1438,9 +1435,7 @@ class Scheduler(SchedulerInterface):
                 finish_reason = request.get_finished_reason()
                 finished = self._handle_stopped_request(request)
                 if finished:
-                    kv_transfer_params, ec_transfer_params = self._free_request(
-                        request
-                    )
+                    kv_transfer_params, ec_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
@@ -1831,9 +1826,7 @@ class Scheduler(SchedulerInterface):
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         assert request.is_finished()
 
-        connector_delay_free_blocks, kv_xfer_params = self._connector_finished(
-            request
-        )
+        connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         _, ec_xfer_params = self._ec_connector_finished(request)
 
         self.encoder_cache_manager.free(request)

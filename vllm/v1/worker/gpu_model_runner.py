@@ -199,7 +199,7 @@ from vllm.v1.worker.ubatch_utils import (
     maybe_create_ubatch_slices,
     split_attn_metadata,
 )
-from vllm.v1.worker.utils import is_residual_scattered_for_sp, scatter_mm_placeholders
+from vllm.v1.worker.utils import is_residual_scattered_for_sp
 from vllm.v1.worker.workspace import lock_workspace
 
 from .utils import (

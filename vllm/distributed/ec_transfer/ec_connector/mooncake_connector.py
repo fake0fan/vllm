@@ -251,6 +251,7 @@ class MooncakeECConnector(ECConnectorBase):
             encoder_cache, metadata
         )
 
+
 class MooncakeECConnectorScheduler:
     """Runs in scheduler side process. Transfer params, metadata for recv/send"""
 
@@ -400,6 +401,30 @@ class MooncakeECConnectorScheduler:
             }
         return len(result_params) > 0, result_params if result_params else None
 
+    def _collect_scheduled_mm_hashes(
+        self, scheduler_output: SchedulerOutput
+    ) -> dict[str, int]:
+        """
+        Collect all mm_hashes from scheduled requests.
+
+        Args:
+            scheduler_output: The scheduler output containing scheduled requests
+
+        Returns:
+            dict: mm_hash -> num_encoder_tokens mapping
+        """
+        mm_hashes = {}
+
+        # Collect from scheduled_new_reqs
+        for req in scheduler_output.scheduled_new_reqs:
+            if hasattr(req, "mm_features") and req.mm_features:
+                for feature in req.mm_features:
+                    mm_hash = feature.identifier
+                    num_tokens = feature.mm_position.get_num_embeds
+                    mm_hashes[mm_hash] = num_tokens
+
+        return mm_hashes
+
 
 class MooncakeECConnectorWorker:
     """Runs in worker side process. Handle actual send/receive with Mooncake"""
@@ -499,9 +524,7 @@ class MooncakeECConnectorWorker:
                 max_workers=self.num_workers,
                 thread_name_prefix="vllm-mooncake-ec-sender",
             )
-            logger.debug(
-                "[EC_PRODUCER] Use %d workers for transfer", self.num_workers
-            )
+            logger.debug("[EC_PRODUCER] Use %d workers for transfer", self.num_workers)
         else:
             self.receiver_loop = asyncio.new_event_loop()
             self._mooncake_receiver_t = threading.Thread(
@@ -628,7 +651,9 @@ class MooncakeECConnectorWorker:
         except zmq.ContextTerminated:
             logger.exception("ZMQ context terminated, exiting Mooncake sender thread.")
         except Exception as e:
-            logger.exception("Error in Mooncake sender thread: %s. Exiting thread.", str(e))
+            logger.exception(
+                "Error in Mooncake sender thread: %s. Exiting thread.", str(e)
+            )
         finally:
             frontend.close()
             backend.close()
@@ -709,9 +734,7 @@ class MooncakeECConnectorWorker:
             lengths.append(remote_token_byte)
 
         if not src_ptrs:
-            logger.warning(
-                "[EC_PRODUCER] No valid transfers in batch, skipping"
-            )
+            logger.warning("[EC_PRODUCER] No valid transfers in batch, skipping")
             return
 
         ret_value = self.engine.batch_transfer_sync_write(
@@ -857,7 +880,6 @@ class MooncakeECConnectorWorker:
         finally:
             sock.close()
 
-
         if transfer_failed:
             # Free the receive buffer slots allocated in group_ec_pull().
             # The remote side never wrote valid data into them (or the
@@ -868,7 +890,9 @@ class MooncakeECConnectorWorker:
                     self.transfer_buffer.free(meta.mm_addr)
                 except Exception as e:
                     logger.warning(
-                        "[EC_CONSUMER] Unable to free buffer space at %d. %s", meta.mm_addr, e
+                        "[EC_CONSUMER] Unable to free buffer space at %d. %s",
+                        meta.mm_addr,
+                        e,
                     )
 
             # Mark these mm_hashes as failed
@@ -919,7 +943,9 @@ class MooncakeECConnectorWorker:
                     self.transfer_buffer.free(addr)
                 except Exception as e:
                     logger.warning(
-                        "[EC_CONSUMER] Unable to free buffer space at %d. %s", meta.mm_addr, e
+                        "[EC_CONSUMER] Unable to free buffer space at %d. %s",
+                        addr,
+                        e,
                     )
 
             # Mark as failed
@@ -955,8 +981,7 @@ class MooncakeECConnectorWorker:
                 req_ids, _ = mm_hashes_meta[key.mm_hash]
                 req_ids.append(key.req_id)
                 logger.debug(
-                    "[EC_CONSUMER] mm_hash=%s already in group, "
-                    "appending req_id=%s",
+                    "[EC_CONSUMER] mm_hash=%s already in group, appending req_id=%s",
                     key.mm_hash,
                     key.req_id,
                 )
@@ -978,7 +1003,10 @@ class MooncakeECConnectorWorker:
                 ((mm_hash, req_ids), meta)
                 for mm_hash, (req_ids, meta) in mm_hashes_meta.items()
             ]
-            logger.debug(f"[EC_CONSUMER] start_load_caches for mm_hash_items {mm_hash_items}")
+            logger.debug(
+                "[EC_CONSUMER] start_load_caches for mm_hash_items %s",
+                mm_hash_items,
+            )
             asyncio.run_coroutine_threadsafe(
                 self.receive_ec(path, mm_hash_items, encoder_cache), self.receiver_loop
             )
@@ -1035,6 +1063,7 @@ class MooncakeECConnectorWorker:
                     encoder_cache=encoder_cache,
                     mm_hash=mm_hash,
                 )
+
 
 def get_mooncake_side_channel_port(vllm_config: VllmConfig) -> int:
     # This logic is now centralized
