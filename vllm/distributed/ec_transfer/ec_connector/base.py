@@ -79,6 +79,14 @@ class ECConnectorBase(ABC):
     def is_consumer(self) -> bool:
         return self._is_consumer
 
+    def shutdown(self) -> None:
+        """
+        Shutdown the connector. This is called when the process
+        is shutting down to ensure that all the async operations are
+        completed and the connector is cleaned up properly.
+        """
+        return None
+
     # ==============================
     # Worker-side methods
     # ==============================
@@ -116,16 +124,15 @@ class ECConnectorBase(ABC):
         assert self._connector_metadata is not None
         return self._connector_metadata
 
-    def register_caches(
+    def register_encoder_cache(
         self,
-        ec_caches: dict[str, torch.Tensor],
+        ec_cache: Any,
     ):
         """
-        Initialize with the EC caches.
+        Initialize and register EC cache.
         Args:
-            ec_caches: dictionary of encoder cache
+            ec_cache
         """
-        # TODO: Implement this later for P2P feature
         return
 
     @abstractmethod
@@ -164,9 +171,35 @@ class ECConnectorBase(ABC):
         """
         pass
 
+    @abstractmethod
+    def maybe_update_remote_cache_state(
+        self, encoder_cache: dict[str, torch.Tensor]
+    ) -> None:
+        """
+        Maybe update the remote cache state based on the local encoder cache.
+
+        This method can be used to synchronize or update the state of the
+        remote cache based on changes in the local encoder cache.
+
+        Args:
+            encoder_cache (dict[str, torch.Tensor]): A dictionary mapping multimodal
+                data hashes (`mm_hash`) to encoder cache tensors.
+        """
+        pass
+
+    @abstractmethod
+    def wait_for_load(self) -> set[str]:
+        """
+        Wait until ec tensors are loaded before they are able to be gathered/used.
+
+        Returns:
+            Set of mm_hashes whose EC transfer failed.
+        """
+        pass
+
     def get_finished(
         self, finished_req_ids: set[str]
-    ) -> tuple[set[str] | None, set[str] | None]:
+    ) -> tuple[set[str] | None, set[str] | None, set[str] | None]:
         """
         Notifies worker-side connector ids of requests that have
         finished generating tokens on the worker.
@@ -174,13 +207,12 @@ class ECConnectorBase(ABC):
         to track which workers are done.
 
         Returns:
-            ids of requests that have finished asynchronous transfer
-            (requests that previously returned True from request_finished()),
-            tuple of (sending/saving ids, recving/loading ids).
-            The finished saves/sends req ids must belong to a set provided in a
-            call to this method (this call or a prior one).
+            Tuple of (finished_sending, finished_recving, failed_recving).
+            - finished_sending: mm_hashes that finished sending
+            - finished_recving: mm_hashes that finished receiving successfully
+            - failed_recving: mm_hashes that failed to receive
         """
-        return None, None
+        return None, None, None
 
     # ==============================
     # Scheduler-side methods
@@ -190,6 +222,7 @@ class ECConnectorBase(ABC):
     def has_cache_item(
         self,
         identifier: str,
+        request: "Request | None" = None,
     ) -> bool:
         """
         Check if a single encoder cache exists
@@ -203,6 +236,23 @@ class ECConnectorBase(ABC):
         """
         pass
 
+    def ensure_cache_available(
+        self, request: "Request", num_computed_tokens: int
+    ) -> bool:
+        """
+        Ensure encoder cache items are available for the given request.
+        May initiate asynchronous transfers for items not yet local.
+
+        Args:
+            request: the request whose multimodal features to check.
+            num_computed_tokens: tokens already covered by cached KV blocks.
+
+        Returns:
+            True if all items are ready or no transfer is needed.
+            False if any items are still in transit (request should be deferred).
+        """
+        return True
+
     @abstractmethod
     def update_state_after_alloc(self, request: "Request", index: int):
         """
@@ -215,7 +265,9 @@ class ECConnectorBase(ABC):
 
     @abstractmethod
     def build_connector_meta(
-        self, scheduler_output: SchedulerOutput
+        self,
+        scheduler_output: SchedulerOutput,
+        encoder_cache_manager: Any = None,
     ) -> ECConnectorMetadata:
         """
         Build the connector metadata for this step.
@@ -225,6 +277,10 @@ class ECConnectorBase(ABC):
 
         Args:
             scheduler_output (SchedulerOutput): the scheduler output object.
+            encoder_cache_manager (EncoderCacheManager, optional): the encoder
+                cache manager to check EncodeCacheManager cache status.
+                Used to determine which caches need to be saved to
+                external storage.
         """
         pass
 

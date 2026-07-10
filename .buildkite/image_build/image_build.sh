@@ -79,12 +79,18 @@ setup_buildx_builder() {
     docker buildx ls | grep -E '^\*|^NAME' || docker buildx ls
 }
 
+annotate_image_tags() {
+    .buildkite/scripts/annotate-image-build.sh \
+        "${IMAGE_TAG:-}" "${IMAGE_TAG_LATEST:-}"
+}
+
 check_and_skip_if_image_exists() {
     if [[ -n "${IMAGE_TAG:-}" ]]; then
         echo "--- :mag: Checking if image exists"
         if docker manifest inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
             echo "Image already exists: ${IMAGE_TAG}"
             echo "Skipping build"
+            annotate_image_tags
             exit 0
         fi
         echo "Image not found, proceeding with build"
@@ -223,13 +229,6 @@ echo "CACHE_FROM_MAIN: ${CACHE_FROM_MAIN}"
 
 check_and_skip_if_image_exists
 
-# The rust frontend lives in a git submodule under rust/. Buildkite's default
-# checkout does not recurse submodules, and the Dockerfile only sees what's in
-# the build context, so initialize the submodule here before invoking bake.
-echo "--- :git: Initializing git submodules"
-git submodule sync --recursive
-git submodule update --init --recursive
-
 echo "--- :docker: Setting up Docker buildx bake"
 echo "Target: ${TARGET}"
 echo "vLLM bake file: ${VLLM_BAKE_FILE_PATH}"
@@ -261,3 +260,5 @@ echo "--- :docker: Building ${TARGET}"
 docker --debug buildx bake -f "${VLLM_BAKE_FILE_PATH}" -f "${CI_HCL_PATH}" --progress plain "${TARGET}"
 
 echo "--- :white_check_mark: Build complete"
+
+annotate_image_tags
